@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="bb2fee7d-0d1b-4940-8792-a808ebc16fc1" name="Changes" comment="">
+    <list default="true" id="bb2fee7d-0d1b-4940-8792-a808ebc16fc1" name="Changes" comment="init project">
       <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/.idea/FireDetectionSystem.iml" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
@@ -76,11 +76,24 @@
       <updated>1765355324879</updated>
       <workItem from="1765355326220" duration="216000" />
       <workItem from="1765355550768" duration="321000" />
-      <workItem from="1765355883214" duration="423000" />
+      <workItem from="1765355883214" duration="762000" />
     </task>
+    <task id="LOCAL-00001" summary="init project">
+      <option name="closed" value="true" />
+      <created>1765356648535</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1765356648535</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="init project" />
+    <option name="LAST_COMMIT_MESSAGE" value="init project" />
   </component>
 </project>
