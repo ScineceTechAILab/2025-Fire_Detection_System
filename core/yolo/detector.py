@@ -18,8 +18,6 @@ except Exception:
     CONFIDENCE_THRESHOLD = 0.5
     CAMERA_INDEX = 0
 
-from utils.logger import setup_logger
-
 
 class Detector:
     """
@@ -36,7 +34,7 @@ class Detector:
         classes: Optional[List[int]] = None,
         imgsz: int = 640,
     ):
-        self.logger = setup_logger("Detector")
+        self.logger = logging.getLogger("Detector")
         self.weights_path = weights_path
         self.conf = float(conf) if conf is not None else CONFIDENCE_THRESHOLD
         self.device = device
