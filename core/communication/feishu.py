@@ -11,15 +11,12 @@ os.environ["NO_PROXY"] = "*"
 os.environ["no_proxy"] = "*"
 
 # 引入日志
-current_file_path = Path(__file__).resolve()
-project_root = current_file_path.parent.parent.parent
-sys.path.append(str(project_root))
-from utils.logger import setup_logger
+import logging
 
 
 class FeishuNotifier:
     def __init__(self, webhook_url=None):
-        self.logger = setup_logger("Feishu")
+        self.logger = logging.getLogger("Feishu")
 
         # 1. 加载 .env
         current_dir = Path(__file__).resolve().parent
@@ -252,6 +249,67 @@ class FeishuNotifier:
         except Exception as e:
             self.logger.exception("轮询异常")
             return False
+
+    def send_card_to_user(self, user_open_id, title, content, image_path=None):
+        """
+        发送卡片消息给单个用户
+        :param user_open_id: 用户的 open_id
+        :param title: 消息标题
+        :param content: 消息内容
+        :param image_path: 图片路径（可选）
+        :return: message_id 或 None
+        """
+        if not user_open_id:
+            self.logger.error("❌ 未提供用户 open_id")
+            return None
+
+        token = self._get_tenant_access_token()
+        if not token:
+            return None
+
+        # 1. 准备图片
+        image_key = None
+        if image_path:
+            image_key = self.upload_image(image_path)
+
+        # 2. 构建卡片
+        time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        final_title = f"【{self.keyword}】{title}" if self.keyword else title
+
+        elements = [
+            {"tag": "div", "text": {"content": f"**时间**: {time_str}\n**详情**: {content}", "tag": "lark_md"}},
+        ]
+        if image_key:
+            elements.append({"tag": "img", "img_key": image_key, "alt": {"content": "现场图", "tag": "plain_text"}})
+
+        card_content = {
+            "header": {"template": "red", "title": {"content": f"🔥 {final_title}", "tag": "plain_text"}},
+            "elements": elements
+        }
+
+        # 3. 发送给单个用户
+        url = "https://open.feishu.cn/open-apis/im/v1/messages"
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"receive_id_type": "open_id"}  # 使用 open_id 类型
+        body = {
+            "receive_id": user_open_id,  # 用户的 open_id
+            "msg_type": "interactive",
+            "content": json.dumps(card_content)
+        }
+
+        try:
+            resp = requests.post(url, headers=headers, params=params, json=body, proxies={"http": None, "https": None})
+            res = resp.json()
+            if res.get("code") == 0:
+                msg_id = res.get("data", {}).get("message_id")
+                self.logger.info(f"用户消息发送成功 ID: {msg_id}")
+                return msg_id
+            else:
+                self.logger.error(f"用户消息发送失败: {res}")
+                return None
+        except Exception as e:
+            self.logger.exception("发送用户消息异常")
+            return None
 
     def get_tenant_access_token(self):
         url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"

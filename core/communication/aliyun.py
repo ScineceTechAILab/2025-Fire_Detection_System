@@ -17,15 +17,12 @@ os.environ["NO_PROXY"] = "*"
 os.environ["no_proxy"] = "*"
 
 # 引入日志
-current_file_path = Path(__file__).resolve()
-project_root = current_file_path.parent.parent.parent
-sys.path.append(str(project_root))
-from utils.logger import setup_logger
+import logging
 
 
 class AliyunNotifier:
     def __init__(self):
-        self.logger = setup_logger("AliyunSMS")
+        self.logger = logging.getLogger("AliyunSMS")
 
         # 1. 确定 .env 路径
         current_dir = Path(__file__).resolve().parent

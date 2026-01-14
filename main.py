@@ -1,10 +1,15 @@
 # 程序入口
 import time
-from core.communication.feishu import FeishuNotifier
-from utils.logger import setup_logger
+import logging
 import threading
 import os
 import cv2
+
+# 初始化日志系统（必须在导入其他模块之前）
+from utils.logging_config import setup_logging
+setup_logging(log_dir="log", log_level=logging.INFO)
+
+from core.communication.feishu import FeishuNotifier
 from core.yolo.detector import Detector
 
 try:
@@ -53,7 +58,7 @@ notifier = FeishuNotifier()
 class Main:
 
     def __init__(self):
-        self.logger = setup_logger("Main")
+        self.logger = logging.getLogger("Main")
         self.last_alert_time = 0
         self.detector = Detector(weights_path=YOLO_WEIGHTS, device=YOLO_DEVICE, conf=0.5)
         # 确保报警图片输出目录存在
