@@ -1,26 +1,48 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  backend:
-    build:
-      context: ./admin-backend
+  admin-backend:
+    build: ./admin-backend
+    container_name: fire-admin-backend
+    working_dir: /app
+    environment:
+      - PYTHONUNBUFFERED=1
     ports:
       - "8001:8001"
     volumes:
       - ./admin-backend/config:/app/config
-      - ./admin-backend/.env:/app/.env
-    environment:
-      - CONFIG_DIR=/app/config
+      - ./log:/app/log
+      - ./admin-backend/.env:/app/.env:ro
+    command: >
+      sh -c "python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 2"
     restart: unless-stopped
 
-  frontend:
+  admin-frontend:
     build:
       context: ./admin-frontend
+      dockerfile: Dockerfile
+    container_name: fire-admin-frontend
     ports:
-      - "5173:80"
+      - "8080:80"
     depends_on:
-      - backend
+      - admin-backend
     restart: unless-stopped
 
-volumes:
-  config:
+  main-service:
+    build: .
+    container_name: fire-main
+    working_dir: /app
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./admin-backend/config:/app/admin-backend/config
+      - ./log:/app/log
+      - ./output:/app/output
+      - ./core/yolo/weights:/app/core/yolo/weights
+    devices:
+      - "nvidia.com/gpu=all"
+    command: >
+      sh -c "python main.py"
+    depends_on:
+      - admin-backend
+    restart: unless-stopped
