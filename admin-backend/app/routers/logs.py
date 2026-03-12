@@ -13,7 +13,7 @@ from .auth import require_auth, require_csrf
 
 router = APIRouter(prefix="/logs", tags=["日志查询"], dependencies=[Depends(require_auth), Depends(require_csrf)])
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _LOG_DIR = _PROJECT_ROOT / "log"
 _SERVICE = LogService(_LOG_DIR, retention_days=7)
 
