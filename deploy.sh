@@ -33,26 +33,13 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+
 # 函数级注释：检查命令是否存在
 check_command() {
     if ! command -v "$1" &> /dev/null; then
         print_error "命令 $1 未安装，请先安装"
         exit 1
     fi
-}
-
-# 函数级注释：检查 Docker 和 Docker Compose
-check_docker() {
-    print_info "检查 Docker 环境..."
-    check_command docker
-    check_command "docker compose"
-    
-    if ! docker info &> /dev/null; then
-        print_error "Docker 服务未运行，请先启动 Docker"
-        exit 1
-    fi
-    
-    print_success "Docker 环境检查通过"
 }
 
 # 函数级注释：Git 更新仓库
@@ -74,6 +61,26 @@ git_update() {
     
     print_success "Git 仓库更新完成"
 }
+
+# 函数级注释：检查 Docker 和 Docker Compose
+check_docker() {
+    print_info "检查 Docker 环境..."
+    check_command docker
+    
+    if ! docker compose version &> /dev/null; then
+        print_error "Docker Compose 插件未安装或无法运行"
+        exit 1
+    fi
+    
+    if ! docker info &> /dev/null; then
+        print_error "Docker 服务未运行，请先启动 Docker"
+        exit 1
+    fi
+    
+    print_success "Docker 环境检查通过"
+}
+
+
 
 # 函数级注释：检查配置文件
 check_config_files() {
