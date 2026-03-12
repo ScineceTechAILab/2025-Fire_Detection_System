@@ -179,12 +179,13 @@ class Main:
                             remaining = 0
                         self.logger.info(f"报警冷却中，剩余 {remaining}s，本次不重复触发")
             
-            # 显示画面
-            cv2.imshow("Fire Detection", annotated_frame)
-            
-            # 按 'q' 退出
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # 显示画面（仅在非 headless 模式下）
+            if not os.getenv("HEADLESS"):
+                cv2.imshow("Fire Detection", annotated_frame)
+                
+                # 按 'q' 退出
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
         
         cap.release()
         cv2.destroyAllWindows()

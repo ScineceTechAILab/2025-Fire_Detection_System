@@ -34,6 +34,7 @@ services:
     working_dir: /app
     environment:
       - PYTHONUNBUFFERED=1
+      - HEADLESS=1
     volumes:
       - ./admin-backend/config:/app/admin-backend/config
       - ./log:/app/log
