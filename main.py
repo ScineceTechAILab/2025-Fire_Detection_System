@@ -11,7 +11,9 @@ import cv2
 # 初始化日志系统（必须在导入其他模块之前）
 from utils.logging_config import setup_logging
 
-setup_logging(log_dir="log", log_level=logging.INFO, retention_days=7)
+# 使用绝对路径，确保在 Docker 中写入正确位置
+log_dir = "/app/log" if os.path.exists("/app") else "log"
+setup_logging(log_dir=log_dir, log_level=logging.INFO, retention_days=7)
 
 from core.communication.communication import Communication
 from core.communication.config_hot_loader import get_config_hot_loader

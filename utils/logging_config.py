@@ -17,8 +17,9 @@ class DailyRotatingFileHandler(FileHandler):
     每天自动创建新的日志文件
     """
     def __init__(self, log_dir, retention_days: int = 7):
-        self.log_dir = Path(log_dir)
+        self.log_dir = Path(log_dir).absolute()
         self.log_dir.mkdir(exist_ok=True)
+        print(f"[DEBUG] 日志目录: {self.log_dir}")  # 输出到控制台以便调试
         self.current_date = None
         self.current_file = None
         self.retention_days = retention_days
