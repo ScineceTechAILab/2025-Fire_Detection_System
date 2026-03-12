@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./admin-backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./admin-backend/config:/app/config
+      - ./admin-backend/.env:/app/.env
+    environment:
+      - CONFIG_DIR=/app/config
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./admin-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  config:

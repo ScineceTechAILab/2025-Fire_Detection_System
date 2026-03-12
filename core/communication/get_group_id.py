@@ -4,7 +4,7 @@ import requests
 
 def get_group_id():
     notifier = FeishuNotifier()
-    token = notifier.get_tenant_access_token()
+    token = notifier._get_tenant_access_token()
 
     url = "https://open.feishu.cn/open-apis/im/v1/chats"
     headers = {"Authorization": f"Bearer {token}"}

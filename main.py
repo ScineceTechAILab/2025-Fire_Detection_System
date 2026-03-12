@@ -1,4 +1,7 @@
-# 程序入口
+"""
+程序入口（支持配置热加载）
+基于YOLOv8的视觉火灾检测系统主程序
+"""
 import time
 import logging
 import threading
@@ -8,9 +11,10 @@ import cv2
 # 初始化日志系统（必须在导入其他模块之前）
 from utils.logging_config import setup_logging
 
-setup_logging(log_dir="log", log_level=logging.INFO)
+setup_logging(log_dir="log", log_level=logging.INFO, retention_days=7)
 
 from core.communication.communication import Communication
+from core.communication.config_hot_loader import get_config_hot_loader
 from core.yolo.detector import Detector
 
 try:
@@ -21,7 +25,6 @@ try:
     from ultralytics.nn.modules.head import Detect
     from ultralytics.nn.modules.block import C2f, Bottleneck, SPPF, DFL
 
-    # 将 YOLOv8 模型所需的常见类标记为安全，以兼容 torch.load 的新安全策略
     torch.serialization.add_safe_globals([
         DetectionModel,
         Conv,
@@ -40,104 +43,149 @@ try:
         nn.MaxPool2d,
     ])
 except (ImportError, AttributeError):
-    # 如果 torch 或 ultralytics 未安装，或 torch 版本较旧，则忽略
     pass
-
-try:
-    from config import ALERT_INTERVAL, CAMERA_INDEX, RTSP_URL, YOLO_WEIGHTS, YOLO_DEVICE  # type: ignore
-except Exception:
-    # --- 如果 config.py 不存在，则使用以下默认值 ---
-    ALERT_INTERVAL = 60  # 默认报警冷却时间（秒）
-    CAMERA_INDEX = 0  # 本地摄像头索引，如果使用RTSP，此项无效
-    RTSP_URL = None  # "rtsp://your_rtsp_stream_url"
-    YOLO_WEIGHTS = "core/yolo/weights/best.pt"  # YOLO 模型权重路径
-    YOLO_DEVICE = "cuda"  # "cpu" 或 "cuda"
 
 
 class Main:
-
+    """
+    类级注释：主程序类
+    """
+    
     def __init__(self):
         self.logger = logging.getLogger("Main")
+        
+        # 初始化配置热加载器
+        self.config_loader = get_config_hot_loader()
+        
         self.last_alert_time = 0
-        self.detector = Detector(weights_path=YOLO_WEIGHTS, device=YOLO_DEVICE, conf=0.5)
+        
+        # 从配置获取 YOLO 参数，或使用默认值
+        yolo_weights = self.config_loader.get_config('yolo_weights', 'core/yolo/weights/best.pt')
+        yolo_device = self.config_loader.get_config('yolo_device', 'cuda')
+        yolo_conf = self.config_loader.get_config('yolo_confidence', 0.8)
+        
+        self.detector = Detector(weights_path=yolo_weights, device=yolo_device, conf=yolo_conf)
+        
         # 初始化通信模块
         self.comm = Communication()
+        
         # 确保报警图片输出目录存在
         os.makedirs("output", exist_ok=True)
-
+        
+        self.logger.info("主程序初始化完成（支持配置热加载）")
+    
+    def _get_config(self):
+        """
+        函数级注释：获取最新配置
+        """
+        alert_interval = self.config_loader.get_config('alert_cooldown_seconds', 360)
+        camera_index = self.config_loader.get_config('camera_index', 0)
+        rtsp_url = self.config_loader.get_config('rtsp_url')
+        detection_interval = self.config_loader.get_config('detection_interval', 5)
+        consecutive_threshold = self.config_loader.get_config('consecutive_threshold', 12)
+        
+        return {
+            'alert_interval': alert_interval,
+            'camera_index': camera_index,
+            'rtsp_url': rtsp_url,
+            'detection_interval': detection_interval,
+            'consecutive_threshold': consecutive_threshold
+        }
+    
     def run_detection_loop(self):
         """
-        主检测循环：处理视频流，连续检测到火灾后触发报警。
+        函数级注释：主检测循环
+        处理视频流，连续检测到火灾后触发报警
         """
+        config = self._get_config()
+        
         # 优先使用 RTSP 流，如果未配置，则使用本地摄像头
-        source = RTSP_URL if RTSP_URL else CAMERA_INDEX
+        source = config['rtsp_url'] if config['rtsp_url'] else config['camera_index']
         cap = cv2.VideoCapture(source)
-
+        
         if not cap.isOpened():
             self.logger.error(f"无法打开视频源: {source}")
             return
-
+        
         self.logger.info(f"视频源打开成功: {source}")
-
+        
         frame_count = 0
         consecutive_fire_detections = 0
-        DETECTION_INTERVAL = 5  # 每 5 帧检测一次
-        CONSECUTIVE_THRESHOLD = 5  # 连续 5 次检测到目标才报警
-
+        fire_state_active = False
+        
         while cap.isOpened():
+            # 每次循环获取最新配置
+            config = self._get_config()
+            
             ret, frame = cap.read()
             if not ret:
                 self.logger.warning("无法读取视频帧，可能已结束。")
                 break
-
+            
             frame_count += 1
             annotated_frame = frame.copy()
-
+            
             # 每隔 DETECTION_INTERVAL 帧进行一次识别
-            if frame_count % DETECTION_INTERVAL == 0:
+            if frame_count % config['detection_interval'] == 0:
                 annotated_frame, detections = self.detector.detect_frame(frame, draw=True)
-
-                # 检查是否检测到火灾 (火灾类别名为 'fire')
+                
+                # 检查是否检测到火灾
                 is_fire_detected = any(det.get('cls_name', '').lower() == 'fire' for det in detections)
-
+                
                 if is_fire_detected:
                     consecutive_fire_detections += 1
-                    self.logger.info(f"检测到火灾! (连续次数: {consecutive_fire_detections}/{CONSECUTIVE_THRESHOLD})")
+                    if not fire_state_active:
+                        fire_state_active = True
+                        self.logger.warning(
+                            f"检测到疑似火灾，开始连续计数 (阈值: {config['consecutive_threshold']})"
+                        )
+                    if consecutive_fire_detections >= config['consecutive_threshold']:
+                        self.logger.warning(
+                            f"疑似火灾连续次数达到阈值 ({consecutive_fire_detections}/{config['consecutive_threshold']})"
+                        )
                 else:
                     if consecutive_fire_detections > 0:
-                        self.logger.info("火灾消失，重置计数器。")
-                    consecutive_fire_detections = 0  # 未检测到则重置
-
+                        self.logger.info(f"疑似火灾消失，连续计数重置 (上次计数: {consecutive_fire_detections})")
+                    consecutive_fire_detections = 0
+                    fire_state_active = False
+                
                 # 检查是否满足报警条件
-                if consecutive_fire_detections >= CONSECUTIVE_THRESHOLD:
+                if consecutive_fire_detections >= config['consecutive_threshold']:
                     current_time = time.time()
-                    if current_time - self.last_alert_time > ALERT_INTERVAL:
-                        self.logger.warning(f"连续 {CONSECUTIVE_THRESHOLD} 次检测到火灾，准备触发报警！")
+                    if current_time - self.last_alert_time > config['alert_interval']:
+                        self.logger.warning(
+                            f"触发报警: 连续 {config['consecutive_threshold']} 次检测到火灾"
+                        )
                         self.last_alert_time = current_time
-
+                        
                         # 保存带有检测框的图片用于报警
                         image_path = f"output/fire_alert_{int(current_time)}.jpg"
                         cv2.imwrite(image_path, annotated_frame)
-
-                        # 启动报警线程，调用 Communication 类的报警方法
+                        self.logger.info(f"报警截图已保存: {image_path}")
+                        
+                        # 启动报警线程
                         alarm_thread = threading.Thread(
                             target=self.comm.run_fire_alarm_process_feishu,
                             args=(image_path,)
                         )
                         alarm_thread.start()
-
-                        # 报警后重置计数器，避免在冷却时间内重复启动线程
+                        
+                        # 报警后重置计数器
                         consecutive_fire_detections = 0
+                        fire_state_active = False
                     else:
-                        self.logger.info("报警冷却中，本次不重复触发。")
-
+                        remaining = int(config['alert_interval'] - (current_time - self.last_alert_time))
+                        if remaining < 0:
+                            remaining = 0
+                        self.logger.info(f"报警冷却中，剩余 {remaining}s，本次不重复触发")
+            
             # 显示画面
             cv2.imshow("Fire Detection", annotated_frame)
-
+            
             # 按 'q' 退出
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-
+        
         cap.release()
         cv2.destroyAllWindows()
         self.logger.info("程序已退出。")

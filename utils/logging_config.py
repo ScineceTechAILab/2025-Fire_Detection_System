@@ -1,10 +1,13 @@
-# utils/logging_config.py
 import logging
 import sys
 import os
+import re
+import queue
+import threading
 from pathlib import Path
 from datetime import datetime
 from logging import FileHandler
+from logging.handlers import QueueHandler, QueueListener
 
 
 class DailyRotatingFileHandler(FileHandler):
@@ -13,17 +16,19 @@ class DailyRotatingFileHandler(FileHandler):
     日志文件名格式：fire_detection_YYYY-MM-DD.log
     每天自动创建新的日志文件
     """
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, retention_days: int = 7):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(exist_ok=True)
         self.current_date = None
         self.current_file = None
+        self.retention_days = retention_days
         
         # 初始化时打开今天的日志文件
         self._open_today_file()
         
         # 调用父类初始化
         super().__init__(self.current_file, mode='a', encoding='utf-8', delay=False)
+        self._cleanup_old_logs()
     
     def _get_today_filename(self):
         """获取今天的日志文件名"""
@@ -59,9 +64,40 @@ class DailyRotatingFileHandler(FileHandler):
         # 重新打开文件流
         self.baseFilename = self.current_file
         self.stream = self._open()
+        self._cleanup_old_logs()
+
+    def _cleanup_old_logs(self):
+        keep_days = int(self.retention_days) if self.retention_days else 7
+        if keep_days <= 0:
+            return
+
+        today = datetime.now().date()
+        cutoff = today.toordinal() - keep_days
+
+        pattern = re.compile(r"^fire_detection_(\d{4}-\d{2}-\d{2})\.log$")
+        for p in self.log_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = pattern.match(p.name)
+            if not m:
+                continue
+            try:
+                file_date = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if file_date.toordinal() < cutoff:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
 
 
-def setup_logging(log_dir="log", log_level=logging.INFO):
+_LOG_QUEUE: queue.Queue | None = None
+_LOG_LISTENER: QueueListener | None = None
+_LOG_LOCK = threading.Lock()
+
+
+def setup_logging(log_dir="log", log_level=logging.INFO, retention_days: int = 7):
     """
     配置全局日志系统，支持输出到文件和控制台
     日志文件按日期命名，格式：fire_detection_YYYY-MM-DD.log
@@ -73,8 +109,18 @@ def setup_logging(log_dir="log", log_level=logging.INFO):
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     
-    # 清除已有的处理器（避免重复添加）
-    root_logger.handlers.clear()
+    global _LOG_QUEUE, _LOG_LISTENER
+    with _LOG_LOCK:
+        if _LOG_LISTENER is not None:
+            try:
+                _LOG_LISTENER.stop()
+            except Exception:
+                pass
+            _LOG_LISTENER = None
+        _LOG_QUEUE = queue.Queue(-1)
+
+        # 清除已有的处理器（避免重复添加）
+        root_logger.handlers.clear()
     
     # 定义日志格式
     formatter = logging.Formatter(
@@ -86,15 +132,42 @@ def setup_logging(log_dir="log", log_level=logging.INFO):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
     
     # 文件处理器（按天轮转，每天自动创建新文件）
-    file_handler = DailyRotatingFileHandler(log_dir)
+    file_handler = DailyRotatingFileHandler(log_dir, retention_days=retention_days)
     file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
+
+    with _LOG_LOCK:
+        qh = QueueHandler(_LOG_QUEUE)
+        qh.setLevel(log_level)
+        root_logger.addHandler(qh)
+
+        _LOG_LISTENER = QueueListener(_LOG_QUEUE, console_handler, file_handler, respect_handler_level=True)
+        _LOG_LISTENER.start()
+
+    for noisy in [
+        "ultralytics",
+        "httpx",
+        "urllib3",
+        "requests",
+        "PIL",
+        "matplotlib",
+    ]:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     
     return root_logger
+
+
+def shutdown_logging():
+    global _LOG_LISTENER
+    with _LOG_LOCK:
+        if _LOG_LISTENER is not None:
+            try:
+                _LOG_LISTENER.stop()
+            except Exception:
+                pass
+            _LOG_LISTENER = None
 
 
 def get_logger(name):

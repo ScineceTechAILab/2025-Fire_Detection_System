@@ -15,7 +15,7 @@ except Exception:
 try:
     from config import CONFIDENCE_THRESHOLD, CAMERA_INDEX  # type: ignore
 except Exception:
-    CONFIDENCE_THRESHOLD = 0.5
+    CONFIDENCE_THRESHOLD = 0.8
     CAMERA_INDEX = 0
 
 
