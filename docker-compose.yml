@@ -7,12 +7,14 @@ services:
     working_dir: /app
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
     ports:
       - "8001:8001"
     volumes:
       - ./admin-backend/config:/app/config
       - ./log:/app/log
       - ./admin-backend/.env:/app/.env:ro
+      - /etc/localtime:/etc/localtime:ro
     command: >
       sh -c "python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 2"
     restart: unless-stopped
@@ -35,11 +37,13 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - HEADLESS=1
+      - TZ=Asia/Shanghai
     volumes:
       - ./admin-backend/config:/app/admin-backend/config
       - ./log:/app/log
       - ./output:/app/output
       - ./core/yolo/weights:/app/core/yolo/weights
+      - /etc/localtime:/etc/localtime:ro
     devices:
       - "nvidia.com/gpu=all"
     command: >
