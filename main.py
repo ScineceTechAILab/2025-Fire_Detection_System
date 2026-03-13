@@ -109,8 +109,6 @@ class Main:
         if config['rtsp_url']:
             # 设置缓冲区大小，减少延迟
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
-            # 设置读取超时（毫秒）
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT, 5000)
         
         if not cap.isOpened():
             self.logger.error(f"无法打开视频源: {source}")
@@ -138,7 +136,6 @@ class Main:
                     cap = cv2.VideoCapture(source)
                     if config['rtsp_url']:
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
-                        cap.set(cv2.CAP_PROP_READ_TIMEOUT, 5000)
                     if cap.isOpened():
                         self.logger.info("视频源重新连接成功")
                         consecutive_read_errors = 0
