@@ -105,6 +105,13 @@ class Main:
         source = config['rtsp_url'] if config['rtsp_url'] else config['camera_index']
         cap = cv2.VideoCapture(source)
         
+        # RTSP 流优化参数
+        if config['rtsp_url']:
+            # 设置缓冲区大小，减少延迟
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+            # 设置读取超时（毫秒）
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT, 5000)
+        
         if not cap.isOpened():
             self.logger.error(f"无法打开视频源: {source}")
             return
@@ -114,6 +121,8 @@ class Main:
         frame_count = 0
         consecutive_fire_detections = 0
         fire_state_active = False
+        consecutive_read_errors = 0
+        max_read_errors = 10
         
         while cap.isOpened():
             # 每次循环获取最新配置
@@ -121,9 +130,27 @@ class Main:
             
             ret, frame = cap.read()
             if not ret:
-                self.logger.warning("无法读取视频帧，可能已结束。")
-                break
+                consecutive_read_errors += 1
+                if consecutive_read_errors >= max_read_errors:
+                    self.logger.error(f"连续 {consecutive_read_errors} 次无法读取视频帧，尝试重新连接...")
+                    cap.release()
+                    time.sleep(2)
+                    cap = cv2.VideoCapture(source)
+                    if config['rtsp_url']:
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+                        cap.set(cv2.CAP_PROP_READ_TIMEOUT, 5000)
+                    if cap.isOpened():
+                        self.logger.info("视频源重新连接成功")
+                        consecutive_read_errors = 0
+                    else:
+                        self.logger.error("视频源重新连接失败，退出")
+                        break
+                else:
+                    self.logger.warning(f"无法读取视频帧 ({consecutive_read_errors}/{max_read_errors}，继续尝试...")
+                    time.sleep(0.5)
+                    continue
             
+            consecutive_read_errors = 0
             frame_count += 1
             annotated_frame = frame.copy()
             
