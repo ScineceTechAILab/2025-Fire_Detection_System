@@ -94,15 +94,35 @@ class Main:
             'consecutive_threshold': consecutive_threshold
         }
     
+    def _is_local_mode(self) -> bool:
+        """
+        函数级注释：判断是否为本地运行模式
+        本地模式：使用摄像头 + 显示画面
+        服务器模式：使用 RTSP + 不显示画面
+        """
+        # 如果设置了 HEADLESS 环境变量，则为服务器模式
+        if os.getenv("HEADLESS"):
+            return False
+        # 否则默认本地模式
+        return True
+    
     def run_detection_loop(self):
         """
         函数级注释：主检测循环
         处理视频流，连续检测到火灾后触发报警
         """
         config = self._get_config()
+        is_local = self._is_local_mode()
         
-        # 优先使用 RTSP 流，如果未配置，则使用本地摄像头
-        source = config['rtsp_url'] if config['rtsp_url'] else config['camera_index']
+        if is_local:
+            # 本地模式：强制使用本地摄像头
+            source = config['camera_index']
+            self.logger.info("本地模式：使用本地摄像头")
+        else:
+            # 服务器模式：使用 RTSP 流（如果配置），否则使用本地摄像头
+            source = config['rtsp_url'] if config['rtsp_url'] else config['camera_index']
+            self.logger.info("服务器模式：使用视频源")
+        
         cap = cv2.VideoCapture(source)
         
         # RTSP 流优化参数
@@ -205,8 +225,8 @@ class Main:
                             remaining = 0
                         self.logger.info(f"报警冷却中，剩余 {remaining}s，本次不重复触发")
             
-            # 显示画面（仅在非 headless 模式下）
-            if not os.getenv("HEADLESS"):
+            # 显示画面（仅在本地模式下）
+            if is_local:
                 cv2.imshow("Fire Detection", annotated_frame)
                 
                 # 按 'q' 退出

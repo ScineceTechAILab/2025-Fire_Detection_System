@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import logging
+import sys
 from collections import deque
 
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
@@ -39,6 +40,19 @@ class Detector:
         imgsz: int = 640,
     ):
         self.logger = logging.getLogger("Detector")
+        # 配置 Detector logger 只输出到控制台，不输出到文件
+        self.logger.propagate = False
+        # 添加控制台处理器
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler(sys.stdout)
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+            self.logger.setLevel(logging.INFO)
+        
         self.weights_path = weights_path
         self.conf = float(conf) if conf is not None else CONFIDENCE_THRESHOLD
         self.device = device
@@ -46,23 +60,24 @@ class Detector:
         self.imgsz = imgsz
         
         # 火焰特征验证参数
-        self.min_fire_area = 500  # 最小火焰面积（像素）
+        self.min_fire_area = 300  # 最小火焰面积（像素），降低阈值
         self.max_fire_area = 500000  # 最大火焰面积（像素）
         
-        # 火焰颜色范围（HSV空间）
-        # 红色火焰有两个范围：低红色(0-10)和高红色(170-180)
-        self.fire_color_low1 = np.array([0, 100, 100])
-        self.fire_color_high1 = np.array([10, 255, 255])
-        self.fire_color_low2 = np.array([170, 100, 100])
+        # 火焰颜色范围（HSV空间）- 更宽松的范围
+        # 红色火焰
+        self.fire_color_low1 = np.array([0, 50, 50])
+        self.fire_color_high1 = np.array([15, 255, 255])
+        self.fire_color_low2 = np.array([165, 50, 50])
         self.fire_color_high2 = np.array([180, 255, 255])
         
-        # 橙色/黄色火焰补充
-        self.fire_color_low3 = np.array([10, 100, 100])
-        self.fire_color_high3 = np.array([35, 255, 255])
+        # 橙色/黄色火焰
+        self.fire_color_low3 = np.array([10, 50, 50])
+        self.fire_color_high3 = np.array([40, 255, 255])
         
         # 动态检测：记录最近几帧的检测结果
         self.detection_history = deque(maxlen=10)  # 最近10帧的检测历史
         self.area_history = deque(maxlen=10)  # 最近10帧的面积变化
+        self.center_history = deque(maxlen=10)  # 最近10帧的中心点变化
 
         self.logger.info(f"初始化 Detector: weights={self.weights_path}, conf={self.conf}, device={self.device}")
         self.model = self._load_model()
@@ -218,11 +233,13 @@ class Detector:
         :return: 是否为有效火焰
         """
         xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
+        center_x = (xmin + xmax) / 2
+        center_y = (ymin + ymax) / 2
         
-        # 1. 面积验证
+        # 1. 面积验证（降低阈值）
         area = (xmax - xmin) * (ymax - ymin)
         if area < self.min_fire_area or area > self.max_fire_area:
-            self.logger.debug(f"火焰验证失败：面积不符合 {area}")
+            self.logger.info(f"火焰验证失败：面积不符合 {area}")
             return False
         
         # 2. 提取ROI区域
@@ -230,7 +247,7 @@ class Detector:
         if roi.size == 0:
             return False
         
-        # 3. 颜色验证（HSV空间）
+        # 3. 颜色验证（HSV空间）- 更宽松
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         
         # 创建三个颜色范围的掩码
@@ -247,9 +264,9 @@ class Detector:
         total_pixels = roi.shape[0] * roi.shape[1]
         fire_ratio = fire_pixels / total_pixels if total_pixels > 0 else 0
         
-        # 火焰颜色像素占比至少10%
-        if fire_ratio < 0.1:
-            self.logger.debug(f"火焰验证失败：颜色占比不足 {fire_ratio:.2f}")
+        # 降低颜色占比要求到 5%
+        if fire_ratio < 0.05:
+            self.logger.info(f"火焰验证失败：颜色占比不足 {fire_ratio:.2f}")
             return False
         
         # 4. 形状验证：火焰通常是不规则的，长宽比不会太极端
@@ -257,40 +274,56 @@ class Detector:
         height = ymax - ymin
         aspect_ratio = width / height if height > 0 else 0
         
-        # 长宽比在0.2到5之间比较合理
-        if aspect_ratio < 0.2 or aspect_ratio > 5.0:
-            self.logger.debug(f"火焰验证失败：长宽比异常 {aspect_ratio:.2f}")
+        # 更宽松的长宽比范围
+        if aspect_ratio < 0.1 or aspect_ratio > 10.0:
+            self.logger.info(f"火焰验证失败：长宽比异常 {aspect_ratio:.2f}")
             return False
         
-        # 5. 亮度验证：火焰通常比较亮
+        # 5. 亮度验证：火焰通常比较亮（降低阈值）
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         avg_brightness = np.mean(gray)
         
-        # 平均亮度至少80（0-255）
-        if avg_brightness < 80:
-            self.logger.debug(f"火焰验证失败：亮度不足 {avg_brightness:.1f}")
+        # 平均亮度至少 50（0-255）
+        if avg_brightness < 50:
+            self.logger.info(f"火焰验证失败：亮度不足 {avg_brightness:.1f}")
             return False
         
-        # 6. 动态验证：如果有历史数据，检查面积变化（火焰通常会闪烁/变化）
-        if len(self.area_history) >= 3:
-            # 计算最近几帧的面积变化率
-            recent_areas = list(self.area_history)[-3:]
-            if len(recent_areas) >= 2:
-                changes = []
-                for i in range(1, len(recent_areas)):
-                    if recent_areas[i-1] > 0:
-                        change = abs(recent_areas[i] - recent_areas[i-1]) / recent_areas[i-1]
-                        changes.append(change)
-                
-                # 如果有历史检测且面积变化很小，可能是静止的光源（如鼠标灯）
-                if changes and max(changes) < 0.05 and len(self.detection_history) >= 5:
-                    # 检查是否连续多帧都有检测且变化极小
-                    consistent_detections = sum(1 for cnt in self.detection_history if cnt > 0)
-                    if consistent_detections >= 5:
-                        self.logger.debug(f"火焰验证失败：疑似静止光源")
-                        return False
+        # 6. 皮肤颜色检测（过滤人脸）
+        # 将 BGR 转换为 YCrCb 颜色空间来检测皮肤
+        ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
+        # 皮肤颜色范围 (YCrCb)
+        skin_low = np.array([0, 133, 77])
+        skin_high = np.array([255, 173, 127])
+        skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
+        skin_pixels = cv2.countNonZero(skin_mask)
+        skin_ratio = skin_pixels / total_pixels if total_pixels > 0 else 0
         
-        self.logger.debug(f"火焰验证通过：面积={area}, 颜色占比={fire_ratio:.2f}, 亮度={avg_brightness:.1f}")
+        # 如果皮肤颜色占比超过 40%，很可能是人脸
+        if skin_ratio > 0.4:
+            self.logger.info(f"火焰验证失败：疑似人脸（皮肤占比 {skin_ratio:.2f}）")
+            return False
+        
+        # 7. 动态验证：检查中心点变化（人脸移动相对规律，火焰闪烁更随机）
+        self.center_history.append((center_x, center_y))
+        if len(self.center_history) >= 5:
+            # 计算最近几帧中心点的移动距离
+            recent_centers = list(self.center_history)
+            total_movement = 0
+            for i in range(1, len(recent_centers)):
+                dx = recent_centers[i][0] - recent_centers[i-1][0]
+                dy = recent_centers[i][1] - recent_centers[i-1][1]
+                total_movement += (dx**2 + dy**2)**0.5
+            
+            avg_movement = total_movement / (len(recent_centers) - 1)
+            # 人脸移动相对平滑，火焰闪烁更剧烈
+            # 如果移动太小且有历史检测，可能是静止物体
+            if avg_movement < 5 and len(self.detection_history) >= 5:
+                consistent_detections = sum(1 for cnt in self.detection_history if cnt > 0)
+                if consistent_detections >= 5:
+                    self.logger.info(f"火焰验证失败：疑似静止物体（移动距离 {avg_movement:.1f}）")
+                    return False
+        
+        self.logger.info(f"火焰验证通过：面积={area}, 颜色占比={fire_ratio:.2f}, 亮度={avg_brightness:.1f}, 皮肤占比={skin_ratio:.2f}")
         return True
 
     def _draw_box(self, img: np.ndarray, det: Dict, is_valid: bool = True):
