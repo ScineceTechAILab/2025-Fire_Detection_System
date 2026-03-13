@@ -7,7 +7,7 @@ import time
 import logging
 
 from core.communication.feishu import FeishuNotifier
-from core.communication.aliyun import AliyunNotifier
+from core.communication.sms import get_sms_manager
 from core.communication.config_hot_loader import get_config_hot_loader
 
 
@@ -23,7 +23,7 @@ class Communication:
         self.config_loader = get_config_hot_loader()
         
         # 初始化通知器
-        self.aliyun = AliyunNotifier()
+        self.sms_manager = get_sms_manager()
         self.notifier = FeishuNotifier()
         
         self.logger.info("通信模块初始化完成")
@@ -55,7 +55,7 @@ class Communication:
         sms_params = {
             "time": time.strftime("%H:%M")
         }
-        self.aliyun.send_sms_to_all(sms_params)
+        self.sms_manager.send_sms_to_all(sms_params)
         
         # 2. 短信加急 (Buzz)
         admin_ids = self.notifier.admin_ids
@@ -100,7 +100,7 @@ class Communication:
         sms_params = {
             "time": time.strftime("%H:%M")
         }
-        sms_result = self.aliyun.send_sms([phone_number], sms_params)
+        sms_result = self.sms_manager.send_sms([phone_number], sms_params)
         if sms_result:
             self.logger.info("✅ 短信发送成功")
         else:

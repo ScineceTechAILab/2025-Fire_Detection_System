@@ -1,35 +1,54 @@
 """
 类级注释：配置管理
-使用 python-dotenv 从 .env 文件读取静态敏感信息
+从 credentials.json 读取敏感配置，保持与主程序配置源一致
 """
-from pydantic_settings import BaseSettings
+import json
+from pathlib import Path
 from functools import lru_cache
 
 
-class Settings(BaseSettings):
+class Settings:
     """
     类级注释：应用配置
     """
-    # 飞书配置（从 .env 读取）
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
     
-    # 阿里云配置（从 .env 读取）
-    ali_access_key_id: str = ""
-    ali_access_key_secret: str = ""
+    def __init__(self):
+        self.app_name: str = "Fire Detection Admin System"
+        self.app_version: str = "1.0.0"
+        self.debug: bool = True
+        self.backend_cors_origins: list = ["*"]
+        
+        # 从 credentials.json 加载敏感配置
+        self.feishu_app_id: str = ""
+        self.feishu_app_secret: str = ""
+        self.ali_access_key_id: str = ""
+        self.ali_access_key_secret: str = ""
+        
+        self._load_from_credentials()
     
-    # 应用配置
-    app_name: str = "Fire Detection Admin System"
-    app_version: str = "1.0.0"
-    debug: bool = True
-    
-    # CORS 配置
-    backend_cors_origins: list = ["*"]
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    def _load_from_credentials(self):
+        """
+        函数级注释：从 credentials.json 加载配置
+        """
+        config_dir = Path("config")
+        credentials_path = config_dir / "credentials.json"
+        
+        if not credentials_path.exists():
+            return
+        
+        try:
+            with open(credentials_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            feishu = data.get("feishu", {})
+            self.feishu_app_id = feishu.get("app_id", "")
+            self.feishu_app_secret = feishu.get("app_secret", "")
+            
+            aliyun = data.get("aliyun", {})
+            self.ali_access_key_id = aliyun.get("access_key_id", "")
+            self.ali_access_key_secret = aliyun.get("access_key_secret", "")
+        except Exception:
+            pass
 
 
 @lru_cache()

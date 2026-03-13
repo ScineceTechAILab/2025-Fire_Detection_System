@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import get_settings
-from app.routers import feishu, sms, system, logs
+from app.routers import feishu, sms, system, logs, credentials
 from app.routers import auth
 
 settings = get_settings()
@@ -46,6 +46,7 @@ app.include_router(feishu.router, prefix="/api/v1")
 app.include_router(sms.router, prefix="/api/v1")
 app.include_router(system.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
+app.include_router(credentials.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 
 

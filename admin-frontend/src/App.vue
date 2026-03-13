@@ -24,6 +24,10 @@
             <el-icon><Setting /></el-icon>
             <span>系统参数</span>
           </el-menu-item>
+          <el-menu-item index="/credentials">
+            <el-icon><Key /></el-icon>
+            <span>凭证配置</span>
+          </el-menu-item>
           <el-menu-item index="/logs">
             <el-icon><Document /></el-icon>
             <span>日志查询</span>
@@ -40,7 +44,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChatDotRound, Document, Message, Setting } from '@element-plus/icons-vue'
+import { ChatDotRound, Document, Message, Setting, Key } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const activeMenu = computed(() => route.path)

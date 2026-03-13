@@ -92,6 +92,7 @@ check_config_files() {
         "feishu.json"
         "sms.json"
         "system.json"
+        "credentials.json"
     )
     
     if [ ! -d "$config_dir" ]; then
@@ -132,6 +133,11 @@ EOF
 {"rtsp_url":"","yolo_device":"cuda:0","yolo_confidence":0.5,"consecutive_threshold":3,"alert_cooldown_seconds":60}
 EOF
                     ;;
+                credentials.json)
+                    cat > "$config_dir/$file" << 'EOF'
+{"sms_provider":"aliyun","feishu":{"app_id":"","app_secret":""},"aliyun":{"access_key_id":"","access_key_secret":"","sms_sign_name":"","sms_template_code":""},"version":1}
+EOF
+                    ;;
             esac
             print_success "已创建默认配置文件: $file"
         done
@@ -143,10 +149,10 @@ EOF
         cat > "admin-backend/.env" << 'EOF'
 feishu_app_id=
 feishu_app_secret=
-ALI_ACCESS_KEY_ID=
-ALI_ACCESS_KEY_SECRET=
-ALI_SMS_SIGN_NAME=
-ALI_SMS_TEMPLATE_CODE=
+ali_access_key_id=
+ali_access_key_secret=
+ali_sms_sign_name=
+ali_sms_template_code=
 EOF
         print_success "已创建默认 .env 文件"
     fi
