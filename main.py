@@ -175,32 +175,35 @@ class Main:
             if frame_count % config['detection_interval'] == 0:
                 annotated_frame, detections = self.detector.detect_frame(frame, draw=True)
                 
-                # 检查是否检测到火灾
-                is_fire_detected = any(det.get('cls_name', '').lower() == 'fire' for det in detections)
+                # 检查是否存在 Level 3 (高级确认) 的火灾或烟雾
+                # 在 Detector V2.0 中，warning_level=3 意味着已经通过了多模态验证和连续多帧的追踪
+                is_confirmed_danger = False
+                danger_types = set()
                 
-                if is_fire_detected:
+                for det in detections:
+                    if det.get('warning_level', 0) == 3:
+                        is_confirmed_danger = True
+                        danger_types.add(det.get('cls_name', 'unknown'))
+                
+                if is_confirmed_danger:
+                    danger_desc = " 和 ".join(danger_types)
                     consecutive_fire_detections += 1
                     if not fire_state_active:
                         fire_state_active = True
-                        self.logger.warning(
-                            f"检测到疑似火灾，开始连续计数 (阈值: {config['consecutive_threshold']})"
-                        )
-                    if consecutive_fire_detections >= config['consecutive_threshold']:
-                        self.logger.warning(
-                            f"疑似火灾连续次数达到阈值 ({consecutive_fire_detections}/{config['consecutive_threshold']})"
-                        )
+                        self.logger.warning(f"🚨 Detector已确认高级预警 ({danger_desc})，进入最终报警确认阶段...")
                 else:
                     if consecutive_fire_detections > 0:
-                        self.logger.info(f"疑似火灾消失，连续计数重置 (上次计数: {consecutive_fire_detections})")
+                        self.logger.info(f"危险目标消失或降级，报警计数重置 (上次计数: {consecutive_fire_detections})")
                     consecutive_fire_detections = 0
                     fire_state_active = False
                 
-                # 检查是否满足报警条件
+                # 为了防止网络抖动导致的偶然丢失，这里仍然保留一个极小的连续确认阈值 (建议在配置里把 threshold 调小，比如 2-3)
+                # 因为 Detector 内部已经做过连续 5 帧的严格校验了
                 if consecutive_fire_detections >= config['consecutive_threshold']:
                     current_time = time.time()
                     if current_time - self.last_alert_time > config['alert_interval']:
                         self.logger.warning(
-                            f"触发报警: 连续 {config['consecutive_threshold']} 次检测到火灾"
+                            f"🔥 触发正式报警: 已确认存在 {danger_desc}!"
                         )
                         self.last_alert_time = current_time
                         

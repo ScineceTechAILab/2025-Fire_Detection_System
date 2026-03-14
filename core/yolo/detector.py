@@ -5,13 +5,20 @@ import numpy as np
 from ultralytics import YOLO
 import logging
 import sys
-from collections import deque
+import math
 
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
 try:
     import torch
     _TORCH_AVAILABLE = True
-except Exception:
+    
+    # 关闭 PyTorch 2.6+ 默认开启的 weights_only
+    import os
+    os.environ["TORCH_FORCE_WEIGHTS_ONLY"] = "0"
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
+         
+except Exception as e:
     _TORCH_AVAILABLE = False
 
 try:
@@ -23,8 +30,8 @@ except Exception:
 
 class Detector:
     """
-    类级注释：火焰检测器
-    结合YOLO目标检测和火焰特征验证，提高检测准确率
+    类级注释：高级火焰检测器 (V2.0)
+    包含多模态验证、人形/手持物过滤、三级预警体系、光照补偿与动态背景更新。
     
     用法:
         det = Detector(weights_path="weights/best.pt", conf=0.4, device="cuda")
@@ -59,40 +66,43 @@ class Detector:
         self.classes = classes
         self.imgsz = imgsz
         
-        # 火焰特征验证参数
-        self.min_fire_area = 300  # 最小火焰面积（像素），降低阈值
-        self.max_fire_area = 500000  # 最大火焰面积（像素）
+        # ==========================================
+        # 1. 动态背景与光照补偿模块
+        # ==========================================
+        # 用于适应不同光照条件，增强对比度
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        # 用于提取动态纹理，过滤静态照片
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=25, detectShadows=False)
         
-        # 火焰颜色范围（HSV空间）- 更宽松的范围
-        # 红色火焰
+        # ==========================================
+        # 2. 火焰颜色模型 (HSV) 
+        # ==========================================
         self.fire_color_low1 = np.array([0, 50, 50])
         self.fire_color_high1 = np.array([15, 255, 255])
         self.fire_color_low2 = np.array([165, 50, 50])
         self.fire_color_high2 = np.array([180, 255, 255])
-        
-        # 橙色/黄色火焰
         self.fire_color_low3 = np.array([10, 50, 50])
         self.fire_color_high3 = np.array([40, 255, 255])
         
-        # 动态检测：记录最近几帧的检测结果
-        self.detection_history = deque(maxlen=10)  # 最近10帧的检测历史
-        self.area_history = deque(maxlen=10)  # 最近10帧的面积变化
-        self.center_history = deque(maxlen=10)  # 最近10帧的中心点变化
+        # ==========================================
+        # 3. 三级预警体系追踪器
+        # ==========================================
+        # 记录格式: { track_id: {'centroid': (x,y), 'frames': 连续帧数, 'misses': 丢失帧数} }
+        self.tracked_targets = {}
+        self.next_track_id = 0
 
-        self.logger.info(f"初始化 Detector: weights={self.weights_path}, conf={self.conf}, device={self.device}")
+        self.logger.info(f"初始化高级 Detector V2.0: weights={self.weights_path}, conf={self.conf}, device={self.device}")
         self.model = self._load_model()
 
     def _check_gpu_availability(self):
         """
         函数级注释：检查并打印 GPU 使用信息
-        用于验证系统是否真正使用了 GPU
         """
         if not _TORCH_AVAILABLE:
             self.logger.info("PyTorch 不可用，无法检测 GPU")
             return
         
         torch = __import__("torch")
-        
         self.logger.info("=" * 50)
         self.logger.info("GPU 使用情况验证")
         self.logger.info("=" * 50)
@@ -105,9 +115,9 @@ class Detector:
             for i in range(torch.cuda.device_count()):
                 device_name = torch.cuda.get_device_name(i)
                 device_prop = torch.cuda.get_device_properties(i)
-                memory_total = device_prop.total_memory / (1024 ** 3)  # GB
-                memory_allocated = torch.cuda.memory_allocated(i) / (1024 ** 3)  # GB
-                memory_reserved = torch.cuda.memory_reserved(i) / (1024 ** 3)  # GB
+                memory_total = device_prop.total_memory / (1024 ** 3)
+                memory_allocated = torch.cuda.memory_allocated(i) / (1024 ** 3)
+                memory_reserved = torch.cuda.memory_reserved(i) / (1024 ** 3)
                 
                 self.logger.info(f"   GPU {i}: {device_name}")
                 self.logger.info(f"      总显存: {memory_total:.2f} GB")
@@ -120,27 +130,20 @@ class Detector:
     
     def _load_model(self) -> YOLO:
         try:
-            # 先检查 GPU 可用性并打印信息
             self._check_gpu_availability()
-            
             model = YOLO(self.weights_path)
-            # 尝试将模型迁移到指定设备
             target = self.device
             if target and "cuda" in str(target).lower():
                 if not _TORCH_AVAILABLE or not getattr(__import__("torch"), "cuda").is_available():
                     self.logger.warning("请求使用 GPU，但 CUDA 不可用，回退到 CPU")
                     target = "cpu"
             try:
-                # ultralytics YOLO 支持 .to(device)
                 model.to(target)
                 self.logger.info(f"模型已迁移到设备: {target}")
             except Exception:
-                # 若 .to 失败，记录但不阻塞（ultralytics 在内部可能已处理）
-                self.logger.warning(f"将模型迁移到 {target} 失败（可忽略，如果 ulralytics 自动管理设备）")
+                self.logger.warning(f"将模型迁移到 {target} 失败（可忽略）")
             
-            # 再次打印 GPU 信息（模型加载后）
             self._check_gpu_availability()
-            
             self.logger.info("YOLO 模型加载成功")
             return model
         except Exception as e:
@@ -159,19 +162,36 @@ class Detector:
             "cls_name": names.get(int(cls), str(int(cls))),
         }
 
-    def detect_frame(self, frame: np.ndarray, draw: bool = True, return_time: bool = False) -> Tuple[np.ndarray, List[Dict]]:
+    def detect_frame(self, frame: np.ndarray, draw: bool = True, return_time: bool = False, is_static_test: bool = False) -> Tuple[np.ndarray, List[Dict]]:
         if frame is None:
             raise ValueError("输入 frame 为空")
 
+        # ---------------------------------------------------------
+        # A. 预处理：光照补偿与背景提取
+        # ---------------------------------------------------------
+        # 提取前景掩码（用于检测动态变化，过滤静态照片）
+        # 如果是静态图片测试模式，则跳过背景建模更新，避免全黑掩码
+        if not is_static_test:
+            fg_mask = self.bg_subtractor.apply(frame)
+        else:
+            # 静态测试时，无法计算运动，我们生成一个全白掩码模拟"有运动"，或者在验证阶段跳过运动检查
+            fg_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
+        
+        # 光照补偿：转换到 YUV 空间并对亮度通道进行 CLAHE 直方图均衡化
+        yuv = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV)
+        yuv[:,:,0] = self.clahe.apply(yuv[:,:,0])
+        enhanced_frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+
+        # ---------------------------------------------------------
+        # B. YOLO 目标检测
+        # ---------------------------------------------------------
         start = time.time()
-        results = self.model.predict(source=frame, conf=self.conf, classes=self.classes, imgsz=self.imgsz, verbose=False)
+        results = self.model.predict(source=enhanced_frame, conf=self.conf, classes=self.classes, imgsz=self.imgsz, verbose=False)
         elapsed = time.time() - start
 
         detections: List[Dict] = []
         annotated = frame.copy() if draw else frame
-        
-        # 当前帧的有效检测数
-        valid_fire_count = 0
+        current_fire_candidates = []
 
         if results and len(results) > 0:
             res = results[0]
@@ -187,162 +207,293 @@ class Detector:
                     confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else np.array(boxes.conf)
                     clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else np.array(boxes.cls)
                 except Exception:
-                    xyxy = np.array([])
-                    confs = np.array([])
-                    clss = np.array([])
+                    xyxy, confs, clss = np.array([]), np.array([]), np.array([])
 
                 for box, conf, cls in zip(xyxy, confs, clss):
                     det = self._format_result(box.tolist(), float(conf), int(cls), cls_names)
+                    cls_name_lower = det.get('cls_name', '').lower()
                     
-                    # 仅对火焰类检测进行验证
-                    if det.get('cls_name', '').lower() == 'fire':
-                        # 火焰特征验证
-                        if self._validate_fire(frame, det):
-                            detections.append(det)
-                            valid_fire_count += 1
-                            if draw:
-                                self._draw_box(annotated, det, is_valid=True)
+                    if cls_name_lower == 'fire':
+                        # ---------------------------------------------------------
+                        # C1. 火焰多模态交叉验证
+                        # ---------------------------------------------------------
+                        is_valid = self._validate_fire(frame, enhanced_frame, fg_mask, det, skip_motion_check=is_static_test)
+                        if is_valid:
+                            current_fire_candidates.append(det)
                         else:
-                            # 无效检测，画灰色框标记（可选）
-                            if draw:
-                                self._draw_box(annotated, det, is_valid=False)
+                            if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
+                            
+                    elif cls_name_lower == 'smoke':
+                        # ---------------------------------------------------------
+                        # C2. 烟雾多模态交叉验证 (过滤加湿器水汽)
+                        # ---------------------------------------------------------
+                        is_valid = self._validate_smoke(frame, det)
+                        if is_valid:
+                            # 为了统一三级预警追踪，把验证通过的烟雾也放入候选列表
+                            # 可以用原来的 det['cls_name'] 保持 smoke
+                            current_fire_candidates.append(det)
+                        else:
+                            if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
+                            
                     else:
-                        # 非火焰类直接添加
                         detections.append(det)
-                        if draw:
-                            self._draw_box(annotated, det)
+                        if draw: self._draw_box(annotated, det, level=-1) # 其他目标：蓝框
+
+        # ---------------------------------------------------------
+        # D. 三级预警体系追踪
+        # ---------------------------------------------------------
+        if not is_static_test:
+            confirmed_detections = self._update_tracker(current_fire_candidates)
+        else:
+            # 静态测试模式下，不使用帧数追踪器，只要通过了单帧验证直接视为确诊
+            confirmed_detections = []
+            for det in current_fire_candidates:
+                det['warning_level'] = 3
+                # 保持它原有的类别，不强制覆盖为 fire
+                confirmed_detections.append(det)
         
-        # 记录检测历史用于动态分析
-        self.detection_history.append(valid_fire_count)
-        
-        # 计算当前帧的总面积（如果有多个检测）
-        total_area = sum((d['xmax'] - d['xmin']) * (d['ymax'] - d['ymin']) for d in detections if d.get('cls_name', '').lower() == 'fire')
-        self.area_history.append(total_area)
+        for det in confirmed_detections:
+            detections.append(det)
+            if draw:
+                self._draw_box(annotated, det, level=det.get('warning_level', 1))
 
         if return_time:
             return annotated, detections, elapsed
         return annotated, detections
-    
-    def _validate_fire(self, frame: np.ndarray, det: Dict) -> bool:
-        """
-        函数级注释：验证检测框是否为真实火焰
-        通过颜色、面积、形状等特征进行二次验证
         
-        :param frame: 原始图像
-        :param det: 检测结果
-        :return: 是否为有效火焰
+    def _update_tracker(self, current_detections: List[Dict]) -> List[Dict]:
+        """
+        函数级注释：中心点追踪与三级预警判定
+        Level 1 (初级疑似): 刚发现的火焰，黄色框，状态不报警
+        Level 2 (中级异常): 持续2-4帧，橙色框，状态不报警
+        Level 3 (高级确认): 持续5帧以上，红色框，输出 'fire' 类触发主程序报警
+        """
+        updated_detections = []
+        unmatched_tracks = set(self.tracked_targets.keys())
+        
+        for det in current_detections:
+            cx = (det['xmin'] + det['xmax']) / 2
+            cy = (det['ymin'] + det['ymax']) / 2
+            
+            # 寻找最近的追踪目标
+            best_track_id = None
+            min_dist = float('inf')
+            for tid in list(unmatched_tracks):
+                track = self.tracked_targets[tid]
+                dist = math.hypot(cx - track['centroid'][0], cy - track['centroid'][1])
+                # 距离阈值设定为 80 像素，适应目标移动
+                if dist < 80:
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_track_id = tid
+                        
+            if best_track_id is not None:
+                # 更新现有追踪
+                self.tracked_targets[best_track_id]['centroid'] = (cx, cy)
+                self.tracked_targets[best_track_id]['frames'] += 1
+                self.tracked_targets[best_track_id]['misses'] = 0
+                frames = self.tracked_targets[best_track_id]['frames']
+                unmatched_tracks.remove(best_track_id)
+            else:
+                # 创建新追踪
+                best_track_id = self.next_track_id
+                self.tracked_targets[best_track_id] = {'centroid': (cx, cy), 'frames': 1, 'misses': 0}
+                self.next_track_id += 1
+                frames = 1
+                
+            # 三级预警判定逻辑
+            original_cls = det.get('cls_name', 'fire')
+            
+            if frames >= 5:
+                level = 3  # 高级确认 -> 立即触发警报
+                # 保持原类别 (fire 或 smoke)，以便后续处理
+            elif frames >= 2:
+                level = 2  # 中级异常 -> 启动二次验证 (暂不报警)
+                det['cls_name'] = f'suspected_{original_cls}'
+            else:
+                level = 1  # 初级疑似 -> 持续追踪 (暂不报警)
+                det['cls_name'] = f'suspected_{original_cls}'
+                
+            det['warning_level'] = level
+            updated_detections.append(det)
+            
+        # 清理丢失的追踪目标 (允许丢失3帧)
+        for tid in list(unmatched_tracks):
+            self.tracked_targets[tid]['misses'] += 1
+            if self.tracked_targets[tid]['misses'] > 3:
+                del self.tracked_targets[tid]
+                
+        return updated_detections
+
+    def _validate_fire(self, raw_frame: np.ndarray, enhanced_frame: np.ndarray, fg_mask: np.ndarray, det: Dict, skip_motion_check: bool = False) -> bool:
+        """
+        函数级注释：多模态特征交叉验证，专治照片误报
+        包括：动态纹理检测、人手肤色过滤、相框直线检测、轮廓复杂度分析
         """
         xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
-        center_x = (xmin + xmax) / 2
-        center_y = (ymin + ymax) / 2
+        width, height = xmax - xmin, ymax - ymin
+        total_pixels = width * height
         
-        # 1. 面积验证（降低阈值）
-        area = (xmax - xmin) * (ymax - ymin)
-        if area < self.min_fire_area or area > self.max_fire_area:
-            self.logger.info(f"火焰验证失败：面积不符合 {area}")
+        if total_pixels < 200:
             return False
+            
+        roi_raw = raw_frame[ymin:ymax, xmin:xmax]
+        roi_enhanced = enhanced_frame[ymin:ymax, xmin:xmax]
+        if roi_raw.size == 0: return False
+
+        # ==========================================
+        # 1. 动态纹理检测 (运动比例)
+        # ==========================================
+        # 真实火焰会跳跃，照片如果是静止的，前景掩码几乎为0
+        roi_fg = fg_mask[ymin:ymax, xmin:xmax]
+        motion_ratio = cv2.countNonZero(roi_fg) / total_pixels
+
+        # ==========================================
+        # 2. 人形/手部肤色过滤 (YCrCb)
+        # ==========================================
+        ycrcb = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2YCrCb)
         
-        # 2. 提取ROI区域
-        roi = frame[ymin:ymax, xmin:xmax]
-        if roi.size == 0:
+        # 优化肤色检测：结合亮度 (Y) 排除极亮的火焰
+        # Y: 80~200 (排除过暗或过亮，火焰通常 Y > 200)
+        # Cr: 133~173 (红红色度)
+        # Cb: 77~127 (蓝蓝色度)
+        skin_low = np.array([80, 135, 85])
+        skin_high = np.array([200, 170, 125])
+        skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
+        skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
+        
+        # 严格限制：如果边界框内大面积是皮肤，且不包含极亮区域，才判定为脸/手
+        # 火焰照片可能也会有部分落在肤色区，所以我们提高阈值到 40%
+        if skin_ratio > 0.40:
+            self.logger.info(f"多模态过滤: 真实肤色占比过高 ({skin_ratio:.2f})，判定为人手/人脸")
             return False
+            
+        # ==========================================
+        # 3. 形状轮廓与手持物过滤 (直线边缘检测)
+        # ==========================================
+        gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray_roi, 50, 150)
+        # 寻找直线，手机/照片边缘通常是长直线
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=40, minLineLength=min(width, height)*0.5, maxLineGap=10)
         
-        # 3. 颜色验证（HSV空间）- 更宽松
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        
-        # 创建三个颜色范围的掩码
+        if lines is not None and len(lines) >= 3:
+            self.logger.info(f"多模态过滤: 检测到 {len(lines)} 条明显直线边缘，疑似相框/手机屏幕")
+            return False
+            
+        # ==========================================
+        # 4. 颜色温度分析 (结合增强图像)
+        # ==========================================
+        hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
         mask1 = cv2.inRange(hsv, self.fire_color_low1, self.fire_color_high1)
         mask2 = cv2.inRange(hsv, self.fire_color_low2, self.fire_color_high2)
         mask3 = cv2.inRange(hsv, self.fire_color_low3, self.fire_color_high3)
+        fire_mask = cv2.bitwise_or(cv2.bitwise_or(mask1, mask2), mask3)
         
-        # 合并掩码
-        fire_mask = cv2.bitwise_or(mask1, mask2)
-        fire_mask = cv2.bitwise_or(fire_mask, mask3)
-        
-        # 计算火焰颜色像素占比
-        fire_pixels = cv2.countNonZero(fire_mask)
-        total_pixels = roi.shape[0] * roi.shape[1]
-        fire_ratio = fire_pixels / total_pixels if total_pixels > 0 else 0
-        
-        # 降低颜色占比要求到 5%
+        fire_ratio = cv2.countNonZero(fire_mask) / total_pixels
         if fire_ratio < 0.05:
-            self.logger.info(f"火焰验证失败：颜色占比不足 {fire_ratio:.2f}")
             return False
-        
-        # 4. 形状验证：火焰通常是不规则的，长宽比不会太极端
-        width = xmax - xmin
-        height = ymax - ymin
-        aspect_ratio = width / height if height > 0 else 0
-        
-        # 更宽松的长宽比范围
-        if aspect_ratio < 0.1 or aspect_ratio > 10.0:
-            self.logger.info(f"火焰验证失败：长宽比异常 {aspect_ratio:.2f}")
-            return False
-        
-        # 5. 亮度验证：火焰通常比较亮（降低阈值）
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray)
-        
-        # 平均亮度至少 50（0-255）
-        if avg_brightness < 50:
-            self.logger.info(f"火焰验证失败：亮度不足 {avg_brightness:.1f}")
-            return False
-        
-        # 6. 皮肤颜色检测（过滤人脸）
-        # 将 BGR 转换为 YCrCb 颜色空间来检测皮肤
-        ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
-        # 皮肤颜色范围 (YCrCb)
-        skin_low = np.array([0, 133, 77])
-        skin_high = np.array([255, 173, 127])
-        skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
-        skin_pixels = cv2.countNonZero(skin_mask)
-        skin_ratio = skin_pixels / total_pixels if total_pixels > 0 else 0
-        
-        # 如果皮肤颜色占比超过 40%，很可能是人脸
-        if skin_ratio > 0.4:
-            self.logger.info(f"火焰验证失败：疑似人脸（皮肤占比 {skin_ratio:.2f}）")
-            return False
-        
-        # 7. 动态验证：检查中心点变化（人脸移动相对规律，火焰闪烁更随机）
-        self.center_history.append((center_x, center_y))
-        if len(self.center_history) >= 5:
-            # 计算最近几帧中心点的移动距离
-            recent_centers = list(self.center_history)
-            total_movement = 0
-            for i in range(1, len(recent_centers)):
-                dx = recent_centers[i][0] - recent_centers[i-1][0]
-                dy = recent_centers[i][1] - recent_centers[i-1][1]
-                total_movement += (dx**2 + dy**2)**0.5
             
-            avg_movement = total_movement / (len(recent_centers) - 1)
-            # 人脸移动相对平滑，火焰闪烁更剧烈
-            # 如果移动太小且有历史检测，可能是静止物体
-            if avg_movement < 5 and len(self.detection_history) >= 5:
-                consistent_detections = sum(1 for cnt in self.detection_history if cnt > 0)
-                if consistent_detections >= 5:
-                    self.logger.info(f"火焰验证失败：疑似静止物体（移动距离 {avg_movement:.1f}）")
-                    return False
-        
-        self.logger.info(f"火焰验证通过：面积={area}, 颜色占比={fire_ratio:.2f}, 亮度={avg_brightness:.1f}, 皮肤占比={skin_ratio:.2f}")
+        # ==========================================
+        # 5. 轮廓复杂度识别
+        # ==========================================
+        # 真实火焰边缘极其不规则，照片通常是矩形
+        contours, _ = cv2.findContours(fire_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        complexity = 0
+        if contours:
+            c = max(contours, key=cv2.contourArea)
+            c_area = cv2.contourArea(c)
+            if c_area > 50:
+                perimeter = cv2.arcLength(c, True)
+                complexity = (perimeter ** 2) / (4 * np.pi * c_area)
+                
+        # 完美的圆形复杂度约等于1，正方形约等于1.27
+        if 0 < complexity < 1.3:
+            self.logger.info(f"多模态过滤: 火焰轮廓过于规则 (复杂度 {complexity:.2f})，疑似人工图像")
+            return False
+            
+        # ==========================================
+        # 6. 动静结合终极校验
+        # ==========================================
+        # 如果是极度静止的物体，且形状不够复杂（照片在晃动时有运动，但形状规则）
+        if not skip_motion_check:
+            if motion_ratio < 0.05 and complexity < 2.0:
+                 self.logger.info(f"多模态过滤: 静态目标且形状不符合真实火焰 (运动比 {motion_ratio:.2f})")
+                 return False
+
+        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动比={motion_ratio:.2f}, 肤色={skin_ratio:.2f}")
         return True
 
-    def _draw_box(self, img: np.ndarray, det: Dict, is_valid: bool = True):
+    def _validate_smoke(self, raw_frame: np.ndarray, det: Dict) -> bool:
         """
-        函数级注释：绘制检测框
+        函数级注释：烟雾特征验证，专门过滤加湿器水汽、白色反光等
+        水汽特征：饱和度极低，亮度极高，内部没有高频纹理（很平滑）
+        火灾烟雾特征：通常夹杂灰/黑/黄色，有颗粒感（高频细节）
+        """
+        xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
+        width, height = xmax - xmin, ymax - ymin
         
-        :param img: 图像
-        :param det: 检测结果
-        :param is_valid: 是否为有效检测（影响颜色）
+        # 面积太小很难判断，直接放行或者过滤视需求而定，这里设定最小面积
+        if width * height < 400:
+            return False
+            
+        roi_raw = raw_frame[ymin:ymax, xmin:xmax]
+        if roi_raw.size == 0: return False
+        
+        # ==========================================
+        # 1. 亮度与饱和度分析 (HSV)
+        # ==========================================
+        hsv = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
+        s_channel = hsv[:, :, 1]
+        v_channel = hsv[:, :, 2]
+        
+        avg_s = np.mean(s_channel)
+        avg_v = np.mean(v_channel)
+        
+        # 加湿器水汽通常非常白（亮度极高，饱和度接近0）
+        # 如果亮度超过 220 且饱和度小于 15，极大概率是纯白水汽或反光
+        if avg_v > 210 and avg_s < 20:
+            self.logger.info(f"烟雾验证失败：亮度极高({avg_v:.1f})且饱和度极低({avg_s:.1f})，疑似加湿器水汽或灯光")
+            return False
+            
+        # ==========================================
+        # 2. 纹理高频细节分析 (Laplacian 边缘检测方差)
+        # ==========================================
+        # 水汽内部非常平滑，边缘模糊；而浓烟内部有颗粒感，滚动时有明显的不规则纹理
+        gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
+        laplacian = cv2.Laplacian(gray_roi, cv2.CV_64F)
+        variance = laplacian.var()
+        
+        # 完美的纯白墙面或浓密水汽方差很低 (< 50)
+        # 真实环境中的烟雾由于透光不均、碳颗粒，方差通常较高
+        if variance < 30:
+            self.logger.info(f"烟雾验证失败：内部纹理过于平滑 (方差 {variance:.1f})，疑似水汽或纯色墙面")
+            return False
+            
+        self.logger.info(f"烟雾验证通过: 亮度={avg_v:.1f}, 饱和度={avg_s:.1f}, 纹理方差={variance:.1f}")
+        return True
+
+    def _draw_box(self, img: np.ndarray, det: Dict, level: int = 1):
         """
-        if is_valid:
-            color = (0, 0, 255)  # 有效火焰：红色
+        函数级注释：分级绘制检测框
+        """
+        if level == 3:
+            color = (0, 0, 255) # 红色: 高级确认 (真实报警)
+            status = " [L3: Confirmed]"
+        elif level == 2:
+            color = (0, 165, 255) # 橙色: 中级异常
+            status = " [L2: Validating]"
+        elif level == 1:
+            color = (0, 255, 255) # 黄色: 初级疑似
+            status = " [L1: Suspected]"
+        elif level == 0:
+            color = (128, 128, 128) # 灰色: 被规则过滤
+            status = " [Filtered]"
         else:
-            color = (128, 128, 128)  # 无效检测：灰色
-        
+            color = (255, 0, 0) # 蓝色: 其他类别
+            status = ""
+            
         cv2.rectangle(img, (det["xmin"], det["ymin"]), (det["xmax"], det["ymax"]), color, 2)
-        label = f'{det["cls_name"]} {det["conf"]:.2f}'
-        if not is_valid:
-            label += " (无效)"
+        label = f'{det["cls_name"]} {det["conf"]:.2f}{status}'
         (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         y0 = max(det["ymin"], h + 6)
         cv2.rectangle(img, (det["xmin"], y0 - h - 6), (det["xmin"] + w, y0), color, -1)

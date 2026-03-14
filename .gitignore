@@ -7,3 +7,5 @@
 /admin-frontend/.env
 /docs/
 /admin-backend/config/
+/dataset/
+/scripts/
