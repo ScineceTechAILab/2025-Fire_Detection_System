@@ -6,6 +6,7 @@ from ultralytics import YOLO
 import logging
 import sys
 import math
+import os
 
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
 try:
@@ -90,6 +91,19 @@ class Detector:
         # 记录格式: { track_id: {'centroid': (x,y), 'frames': 连续帧数, 'misses': 丢失帧数} }
         self.tracked_targets = {}
         self.next_track_id = 0
+
+        # 初始化人脸检测器 (Haar Cascade) 用于二次过滤
+        try:
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            if os.path.exists(cascade_path):
+                self.face_cascade = cv2.CascadeClassifier(cascade_path)
+                self.logger.info(f"已加载人脸检测器: {cascade_path}")
+            else:
+                self.face_cascade = None
+                self.logger.warning("未找到人脸检测模型，将仅依赖肤色阈值过滤")
+        except Exception as e:
+            self.face_cascade = None
+            self.logger.warning(f"加载人脸检测器失败: {e}")
 
         self.logger.info(f"初始化高级 Detector V2.0: weights={self.weights_path}, conf={self.conf}, device={self.device}")
         self.model = self._load_model()
@@ -363,11 +377,23 @@ class Detector:
         skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
         
         # 严格限制：如果边界框内大面积是皮肤，且不包含极亮区域，才判定为脸/手
-        # 火焰照片可能也会有部分落在肤色区，所以我们提高阈值到 40%
-        if skin_ratio > 0.40:
-            self.logger.info(f"多模态过滤: 真实肤色占比过高 ({skin_ratio:.2f})，判定为人手/人脸")
+        # 火焰照片可能也会有部分落在肤色区，所以我们提高阈值到 30% (原 40%)
+        # 这里的 0.30 是经验值，针对低头看手机等场景进行了优化
+        if skin_ratio > 0.30:
+            self.logger.info(f"多模态过滤: 真实肤色占比过高 ({skin_ratio:.2f} > 0.30)，判定为人手/人脸")
             return False
             
+        # 额外的人脸检测器校验 (Haar Cascade)
+        # 如果肤色占比 > 15% 且 检测到人脸特征，直接过滤
+        if self.face_cascade and skin_ratio > 0.15:
+            # 转换为灰度图检测
+            gray_roi_face = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
+            # 适当放大搜索比例，检测正脸
+            faces = self.face_cascade.detectMultiScale(gray_roi_face, scaleFactor=1.1, minNeighbors=3, minSize=(20, 20))
+            if len(faces) > 0:
+                self.logger.info(f"多模态过滤: Haar级联检测器识别到人脸特征，判定为误报")
+                return False
+
         # ==========================================
         # 3. 形状轮廓与手持物过滤 (直线边缘检测)
         # ==========================================
