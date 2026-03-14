@@ -8,6 +8,12 @@ import sys
 import math
 import os
 
+# 导入项目统一的日志配置
+try:
+    from utils.logging_config import get_logger
+except ImportError:
+    get_logger = logging.getLogger
+
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
 try:
     import torch
@@ -47,19 +53,7 @@ class Detector:
         classes: Optional[List[int]] = None,
         imgsz: int = 640,
     ):
-        self.logger = logging.getLogger("Detector")
-        # 配置 Detector logger 只输出到控制台，不输出到文件
-        self.logger.propagate = False
-        # 添加控制台处理器
-        if not self.logger.handlers:
-            console_handler = logging.StreamHandler(sys.stdout)
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - [%(levelname)s] - %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-            self.logger.setLevel(logging.INFO)
+        self.logger = get_logger("Detector")
         
         self.weights_path = weights_path
         self.conf = float(conf) if conf is not None else CONFIDENCE_THRESHOLD
