@@ -450,7 +450,32 @@ class Detector:
         if 0 < complexity < 1.3:
             self.logger.info(f"多模态过滤: 火焰轮廓过于规则 (复杂度 {complexity:.2f})，疑似人工图像")
             return False
-            
+
+        # [新增] 矩形填充度检查 (Extent) - 过滤方形物体
+        # 人工物体（盒子、手机、纸巾）通常填充度很高(>0.7)，真实火焰通常是不规则的锥形
+        if contours:
+            x, y, w, h = cv2.boundingRect(c)
+            # 计算轮廓在自身外接矩形中的占比
+            rect_area = w * h
+            if rect_area > 0:
+                extent = float(c_area) / rect_area
+                # 只有当置信度不是极高时才应用此规则（防止大火被误杀）
+                if extent > 0.75 and det['conf'] < 0.85:
+                    self.logger.info(f"多模态过滤: 目标形状过于方正 (填充度 {extent:.2f} > 0.75)，疑似人工物体")
+                    return False
+
+        # [新增] 亮度均匀度检查 (Intensity Uniformity) - 过滤纯色物体
+        # 真实火焰内部亮度变化剧烈（焰心白->外焰红），标准差大
+        # 纯色物体（如黄色纸巾、墙面）亮度非常均匀，标准差小
+        v_channel = hsv_raw[:, :, 2]
+        v_std = np.std(v_channel)
+        
+        # 阈值设定：一般火焰的 V 通道标准差通常 > 40
+        # 纯色平面物体的标准差通常 < 20
+        if v_std < 25:
+             self.logger.info(f"多模态过滤: 内部亮度过于均匀 (标准差 {v_std:.2f} < 25)，疑似纯色固体表面")
+             return False
+
         # ==========================================
         # 6. 动静结合终极校验
         # ==========================================
@@ -460,7 +485,7 @@ class Detector:
                  self.logger.info(f"多模态过滤: 静态目标且形状不符合真实火焰 (运动比 {motion_ratio:.2f})")
                  return False
 
-        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动比={motion_ratio:.2f}, 肤色={skin_ratio:.2f}, 饱和度={avg_saturation:.1f}")
+        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动={motion_ratio:.2f}, 肤色={skin_ratio:.2f}, 饱和度={avg_saturation:.1f}, 亮度方差={v_std:.1f}")
         return True
 
     def _validate_smoke(self, raw_frame: np.ndarray, det: Dict) -> bool:
