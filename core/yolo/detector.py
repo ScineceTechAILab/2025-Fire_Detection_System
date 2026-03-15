@@ -233,15 +233,14 @@ class Detector:
                             
                     elif cls_name_lower == 'smoke':
                         # ---------------------------------------------------------
-                        # C2. 烟雾多模态交叉验证 (过滤加湿器水汽)
+                        # C2. 烟雾检测已禁用 (避免加湿器误报)
                         # ---------------------------------------------------------
-                        is_valid = self._validate_smoke(frame, det)
-                        if is_valid:
-                            # 为了统一三级预警追踪，把验证通过的烟雾也放入候选列表
-                            # 可以用原来的 det['cls_name'] 保持 smoke
-                            current_fire_candidates.append(det)
-                        else:
-                            if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
+                        # is_valid = self._validate_smoke(frame, det)
+                        # if is_valid:
+                        #     current_fire_candidates.append(det)
+                        # else:
+                        #     if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
+                        pass
                             
                     else:
                         detections.append(det)
@@ -394,10 +393,11 @@ class Detector:
         gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray_roi, 50, 150)
         # 寻找直线，手机/照片边缘通常是长直线
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=40, minLineLength=min(width, height)*0.5, maxLineGap=10)
+        # [优化] 降低阈值以更容易检测到人工物体边缘（如镜框、反光物边缘）
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=30, minLineLength=min(width, height)*0.3, maxLineGap=10)
         
         if lines is not None and len(lines) >= 3:
-            self.logger.info(f"多模态过滤: 检测到 {len(lines)} 条明显直线边缘，疑似相框/手机屏幕")
+            self.logger.info(f"多模态过滤: 检测到 {len(lines)} 条明显直线边缘，疑似相框/手机屏幕/人工物体")
             return False
             
         # ==========================================
@@ -411,6 +411,26 @@ class Detector:
         
         fire_ratio = cv2.countNonZero(fire_mask) / total_pixels
         if fire_ratio < 0.05:
+            return False
+
+        # [新增] 饱和度平均值检查 (过滤水汽反光/指示灯)
+        # 计算原始图像 ROI 的平均饱和度
+        hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
+        avg_saturation = np.mean(hsv_raw[:, :, 1])
+        # 真实火焰饱和度通常较高 (>40)，水汽反光或透过白雾的红光饱和度较低
+        if avg_saturation < 35:
+            self.logger.info(f"多模态过滤: 平均饱和度过低 ({avg_saturation:.1f} < 35)，疑似水汽反光或指示灯")
+            return False
+
+        # [新增] 高光反射检测 (Specular Reflection)
+        # 镜面反射通常会导致局部极高亮度（过曝），且纹理细节丢失
+        v_channel = hsv_raw[:, :, 2]
+        # 统计亮度 > 250 (接近过曝) 的像素占比
+        highlight_mask = v_channel > 250
+        highlight_ratio = np.count_nonzero(highlight_mask) / total_pixels
+        
+        if highlight_ratio > 0.3:
+            self.logger.info(f"多模态过滤: 检测到大面积高光反射 (占比 {highlight_ratio:.2f} > 0.3)，疑似镜面/玻璃反光")
             return False
             
         # ==========================================
@@ -440,7 +460,7 @@ class Detector:
                  self.logger.info(f"多模态过滤: 静态目标且形状不符合真实火焰 (运动比 {motion_ratio:.2f})")
                  return False
 
-        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动比={motion_ratio:.2f}, 肤色={skin_ratio:.2f}")
+        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动比={motion_ratio:.2f}, 肤色={skin_ratio:.2f}, 饱和度={avg_saturation:.1f}")
         return True
 
     def _validate_smoke(self, raw_frame: np.ndarray, det: Dict) -> bool:
@@ -451,6 +471,7 @@ class Detector:
         """
         xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
         width, height = xmax - xmin, ymax - ymin
+        conf = det['conf']
         
         # 面积太小很难判断，直接放行或者过滤视需求而定，这里设定最小面积
         if width * height < 400:
@@ -469,10 +490,21 @@ class Detector:
         avg_s = np.mean(s_channel)
         avg_v = np.mean(v_channel)
         
-        # 加湿器水汽通常非常白（亮度极高，饱和度接近0）
-        # 如果亮度超过 220 且饱和度小于 15，极大概率是纯白水汽或反光
-        if avg_v > 210 and avg_s < 20:
-            self.logger.info(f"烟雾验证失败：亮度极高({avg_v:.1f})且饱和度极低({avg_s:.1f})，疑似加湿器水汽或灯光")
+        # [调整] 加湿器水汽通常非常白（亮度极高，饱和度接近0）
+        # 之前的阈值 (V>210, S<20) 可能太严格，导致稍暗的水汽漏过
+        # 现在的策略：如果是低置信度 (<0.75) 的检测，应用更严格的 HSV 过滤
+        
+        if conf < 0.75:
+            # 低置信度：只要比较白 (V>160) 且饱和度低 (S<30)，就认为是水汽
+            v_thresh = 160
+            s_thresh = 30
+        else:
+            # 高置信度：要求非常白才过滤
+            v_thresh = 200
+            s_thresh = 20
+            
+        if avg_v > v_thresh and avg_s < s_thresh:
+            self.logger.info(f"烟雾验证失败：疑似水汽/反光 (Conf={conf:.2f}, V={avg_v:.1f}>{v_thresh}, S={avg_s:.1f}<{s_thresh})")
             return False
             
         # ==========================================
@@ -483,13 +515,14 @@ class Detector:
         laplacian = cv2.Laplacian(gray_roi, cv2.CV_64F)
         variance = laplacian.var()
         
-        # 完美的纯白墙面或浓密水汽方差很低 (< 50)
-        # 真实环境中的烟雾由于透光不均、碳颗粒，方差通常较高
-        if variance < 30:
-            self.logger.info(f"烟雾验证失败：内部纹理过于平滑 (方差 {variance:.1f})，疑似水汽或纯色墙面")
+        # [调整] 根据置信度调整方差阈值
+        var_thresh = 40 if conf < 0.75 else 25
+        
+        if variance < var_thresh:
+            self.logger.info(f"烟雾验证失败：纹理太平滑 (方差 {variance:.1f} < {var_thresh})，疑似水汽")
             return False
             
-        self.logger.info(f"烟雾验证通过: 亮度={avg_v:.1f}, 饱和度={avg_s:.1f}, 纹理方差={variance:.1f}")
+        self.logger.info(f"烟雾验证通过: Conf={conf:.2f}, V={avg_v:.1f}, S={avg_s:.1f}, Var={variance:.1f}")
         return True
 
     def _draw_box(self, img: np.ndarray, det: Dict, level: int = 1):
