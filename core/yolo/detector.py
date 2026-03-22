@@ -1,5 +1,6 @@
+import json
 import time
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -85,6 +86,10 @@ class Detector:
         # 记录格式: { track_id: {'centroid': (x,y), 'frames': 连续帧数, 'misses': 丢失帧数} }
         self.tracked_targets = {}
         self.next_track_id = 0
+        self._runtime_config_signature = ""
+        self._init_runtime_defaults()
+        self._init_runtime_config_loader()
+        self._refresh_runtime_config(force=True)
 
         # 初始化人脸检测器 (Haar Cascade) 用于二次过滤
         try:
@@ -101,6 +106,140 @@ class Detector:
 
         self.logger.info(f"初始化高级 Detector V2.0: weights={self.weights_path}, conf={self.conf}, device={self.device}")
         self.model = self._load_model()
+
+    def _init_runtime_defaults(self):
+        self.yolo_iou_threshold = 0.45
+        self.min_box_area = 200
+        self.max_box_area = 500000
+        self.fire_small_area_threshold = 1500
+        self.fire_medium_area_threshold = 6000
+        self.fire_small_target_fire_ratio_min = 0.10
+        self.fire_medium_target_fire_ratio_min = 0.06
+        self.fire_large_target_fire_ratio_min = 0.05
+        self.fire_small_target_motion_min = 0.08
+        self.fire_medium_target_motion_min = 0.05
+        self.fire_large_target_motion_min = 0.04
+        self.fire_small_target_vstd_min = 32.0
+        self.fire_medium_target_vstd_min = 25.0
+        self.fire_large_target_vstd_min = 22.0
+        self.fire_small_target_confirm_frames = 7
+        self.fire_small_target_jitter_min = 0.015
+        self.fire_track_match_dist_px = 80
+        self.fire_track_min_iou = 0.10
+        self.fire_track_area_change_max = 2.0
+
+    def _init_runtime_config_loader(self):
+        self.config_loader = None
+        try:
+            from core.communication.config_hot_loader import get_config_hot_loader
+            self.config_loader = get_config_hot_loader()
+        except Exception as e:
+            self.logger.warning(f"热加载配置不可用，使用默认参数: {e}")
+
+    def _to_int(self, value: Any, default: int, min_val: Optional[int] = None, max_val: Optional[int] = None) -> int:
+        try:
+            out = int(value)
+        except Exception:
+            return default
+        if min_val is not None:
+            out = max(min_val, out)
+        if max_val is not None:
+            out = min(max_val, out)
+        return out
+
+    def _to_float(
+        self, value: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None
+    ) -> float:
+        try:
+            out = float(value)
+        except Exception:
+            return default
+        if min_val is not None:
+            out = max(min_val, out)
+        if max_val is not None:
+            out = min(max_val, out)
+        return out
+
+    def _refresh_runtime_config(self, force: bool = False):
+        if not self.config_loader:
+            return
+        try:
+            raw_cfg = {
+                "yolo_iou_threshold": self.config_loader.get_config("yolo_iou_threshold", self.yolo_iou_threshold),
+                "min_box_area": self.config_loader.get_config("min_box_area", self.min_box_area),
+                "max_box_area": self.config_loader.get_config("max_box_area", self.max_box_area),
+                "fire_small_area_threshold": self.config_loader.get_config("fire_small_area_threshold", self.fire_small_area_threshold),
+                "fire_medium_area_threshold": self.config_loader.get_config("fire_medium_area_threshold", self.fire_medium_area_threshold),
+                "fire_small_target_motion_min": self.config_loader.get_config("fire_small_target_motion_min", self.fire_small_target_motion_min),
+                "fire_small_target_fire_ratio_min": self.config_loader.get_config("fire_small_target_fire_ratio_min", self.fire_small_target_fire_ratio_min),
+                "fire_small_target_confirm_frames": self.config_loader.get_config("fire_small_target_confirm_frames", self.fire_small_target_confirm_frames),
+                "fire_small_target_jitter_min": self.config_loader.get_config("fire_small_target_jitter_min", self.fire_small_target_jitter_min),
+                "fire_track_match_dist_px": self.config_loader.get_config("fire_track_match_dist_px", self.fire_track_match_dist_px),
+                "fire_track_min_iou": self.config_loader.get_config("fire_track_min_iou", self.fire_track_min_iou),
+                "fire_track_area_change_max": self.config_loader.get_config("fire_track_area_change_max", self.fire_track_area_change_max),
+            }
+        except Exception as e:
+            self.logger.warning(f"读取热配置失败: {e}")
+            return
+
+        signature = json.dumps(raw_cfg, sort_keys=True, ensure_ascii=False, default=str)
+        if not force and signature == self._runtime_config_signature:
+            return
+        self._runtime_config_signature = signature
+
+        self.yolo_iou_threshold = self._to_float(
+            raw_cfg.get("yolo_iou_threshold"), self.yolo_iou_threshold, min_val=0.05, max_val=0.95
+        )
+        self.min_box_area = self._to_int(
+            raw_cfg.get("min_box_area"), self.min_box_area, min_val=50, max_val=200000
+        )
+        self.max_box_area = self._to_int(
+            raw_cfg.get("max_box_area"), self.max_box_area, min_val=1000, max_val=10000000
+        )
+        if self.max_box_area <= self.min_box_area:
+            self.max_box_area = self.min_box_area + 1000
+
+        self.fire_small_area_threshold = self._to_int(
+            raw_cfg.get("fire_small_area_threshold"), self.fire_small_area_threshold, min_val=100, max_val=50000
+        )
+        self.fire_medium_area_threshold = self._to_int(
+            raw_cfg.get("fire_medium_area_threshold"), self.fire_medium_area_threshold, min_val=500, max_val=300000
+        )
+        if self.fire_medium_area_threshold <= self.fire_small_area_threshold:
+            self.fire_medium_area_threshold = self.fire_small_area_threshold + 1000
+
+        self.fire_small_target_motion_min = self._to_float(
+            raw_cfg.get("fire_small_target_motion_min"), self.fire_small_target_motion_min, min_val=0.0, max_val=1.0
+        )
+        self.fire_small_target_fire_ratio_min = self._to_float(
+            raw_cfg.get("fire_small_target_fire_ratio_min"), self.fire_small_target_fire_ratio_min, min_val=0.0, max_val=1.0
+        )
+        self.fire_small_target_confirm_frames = self._to_int(
+            raw_cfg.get("fire_small_target_confirm_frames"), self.fire_small_target_confirm_frames, min_val=5, max_val=20
+        )
+        self.fire_small_target_jitter_min = self._to_float(
+            raw_cfg.get("fire_small_target_jitter_min"), self.fire_small_target_jitter_min, min_val=0.0, max_val=0.2
+        )
+
+        self.fire_track_match_dist_px = self._to_int(
+            raw_cfg.get("fire_track_match_dist_px"), self.fire_track_match_dist_px, min_val=20, max_val=500
+        )
+        self.fire_track_min_iou = self._to_float(
+            raw_cfg.get("fire_track_min_iou"), self.fire_track_min_iou, min_val=0.0, max_val=1.0
+        )
+        self.fire_track_area_change_max = self._to_float(
+            raw_cfg.get("fire_track_area_change_max"), self.fire_track_area_change_max, min_val=1.0, max_val=20.0
+        )
+
+    def _clip_det_box(self, det: Dict, frame_shape: Tuple[int, ...]) -> Optional[Tuple[int, int, int, int]]:
+        h, w = frame_shape[:2]
+        xmin = max(0, min(w - 1, int(det.get("xmin", 0))))
+        ymin = max(0, min(h - 1, int(det.get("ymin", 0))))
+        xmax = max(0, min(w, int(det.get("xmax", 0))))
+        ymax = max(0, min(h, int(det.get("ymax", 0))))
+        if xmax <= xmin or ymax <= ymin:
+            return None
+        return xmin, ymin, xmax, ymax
 
     def _check_gpu_availability(self):
         """
@@ -172,34 +311,41 @@ class Detector:
 
     def detect_frame(self, frame: np.ndarray, draw: bool = True, return_time: bool = False, is_static_test: bool = False) -> Tuple[np.ndarray, List[Dict]]:
         if frame is None:
-            raise ValueError("输入 frame 为空")
+            raise ValueError("输入帧为空")
+        self._refresh_runtime_config(force=False)
 
-        # ---------------------------------------------------------
-        # A. 预处理：光照补偿与背景提取
-        # ---------------------------------------------------------
-        # 提取前景掩码（用于检测动态变化，过滤静态照片）
-        # 如果是静态图片测试模式，则跳过背景建模更新，避免全黑掩码
         if not is_static_test:
             fg_mask = self.bg_subtractor.apply(frame)
         else:
-            # 静态测试时，无法计算运动，我们生成一个全白掩码模拟"有运动"，或者在验证阶段跳过运动检查
             fg_mask = np.ones(frame.shape[:2], dtype=np.uint8) * 255
-        
-        # 光照补偿：转换到 YUV 空间并对亮度通道进行 CLAHE 直方图均衡化
+
         yuv = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV)
-        yuv[:,:,0] = self.clahe.apply(yuv[:,:,0])
+        yuv[:, :, 0] = self.clahe.apply(yuv[:, :, 0])
         enhanced_frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
 
-        # ---------------------------------------------------------
-        # B. YOLO 目标检测
-        # ---------------------------------------------------------
         start = time.time()
-        results = self.model.predict(source=enhanced_frame, conf=self.conf, classes=self.classes, imgsz=self.imgsz, verbose=False)
+        try:
+            results = self.model.predict(
+                source=enhanced_frame,
+                conf=self.conf,
+                iou=self.yolo_iou_threshold,
+                classes=self.classes,
+                imgsz=self.imgsz,
+                verbose=False,
+            )
+        except Exception as e:
+            elapsed = time.time() - start
+            self.logger.exception(f"YOLO 单帧推理失败: {e}")
+            empty_dets: List[Dict] = []
+            if return_time:
+                return (frame.copy() if draw else frame), empty_dets, elapsed
+            return (frame.copy() if draw else frame), empty_dets
+
         elapsed = time.time() - start
 
         detections: List[Dict] = []
         annotated = frame.copy() if draw else frame
-        current_fire_candidates = []
+        current_fire_candidates: List[Dict] = []
 
         if results and len(results) > 0:
             res = results[0]
@@ -220,45 +366,41 @@ class Detector:
                 for box, conf, cls in zip(xyxy, confs, clss):
                     det = self._format_result(box.tolist(), float(conf), int(cls), cls_names)
                     cls_name_lower = det.get('cls_name', '').lower()
-                    
+
                     if cls_name_lower == 'fire':
-                        # ---------------------------------------------------------
-                        # C1. 火焰多模态交叉验证
-                        # ---------------------------------------------------------
+                        box_area = max((det['xmax'] - det['xmin']) * (det['ymax'] - det['ymin']), 0)
+                        if box_area < self.min_box_area or box_area > self.max_box_area:
+                            self.logger.info(
+                                f"检测框面积过滤: area={box_area}, range=[{self.min_box_area}, {self.max_box_area}]"
+                            )
+                            if draw:
+                                self._draw_box(annotated, det, level=0)
+                            continue
+
                         is_valid = self._validate_fire(frame, enhanced_frame, fg_mask, det, skip_motion_check=is_static_test)
                         if is_valid:
                             current_fire_candidates.append(det)
                         else:
-                            if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
-                            
+                            if draw:
+                                self._draw_box(annotated, det, level=0)
+
                     elif cls_name_lower == 'smoke':
-                        # ---------------------------------------------------------
-                        # C2. 烟雾检测已禁用 (避免加湿器误报)
-                        # ---------------------------------------------------------
-                        # is_valid = self._validate_smoke(frame, det)
-                        # if is_valid:
-                        #     current_fire_candidates.append(det)
-                        # else:
-                        #     if draw: self._draw_box(annotated, det, level=0) # 无效：灰框
+                        # smoke 继续禁用，避免加湿器误报
                         pass
-                            
+
                     else:
                         detections.append(det)
-                        if draw: self._draw_box(annotated, det, level=-1) # 其他目标：蓝框
+                        if draw:
+                            self._draw_box(annotated, det, level=-1)
 
-        # ---------------------------------------------------------
-        # D. 三级预警体系追踪
-        # ---------------------------------------------------------
         if not is_static_test:
             confirmed_detections = self._update_tracker(current_fire_candidates)
         else:
-            # 静态测试模式下，不使用帧数追踪器，只要通过了单帧验证直接视为确诊
             confirmed_detections = []
             for det in current_fire_candidates:
                 det['warning_level'] = 3
-                # 保持它原有的类别，不强制覆盖为 fire
                 confirmed_detections.append(det)
-        
+
         for det in confirmed_detections:
             detections.append(det)
             if draw:
@@ -267,225 +409,347 @@ class Detector:
         if return_time:
             return annotated, detections, elapsed
         return annotated, detections
-        
+
+    def _bbox_iou(self, a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        inter_w = max(0, min(ax2, bx2) - max(ax1, bx1))
+        inter_h = max(0, min(ay2, by2) - max(ay1, by1))
+        inter = inter_w * inter_h
+        if inter <= 0:
+            return 0.0
+        area_a = max((ax2 - ax1) * (ay2 - ay1), 1)
+        area_b = max((bx2 - bx1) * (by2 - by1), 1)
+        union = area_a + area_b - inter
+        return float(inter / union) if union > 0 else 0.0
+
+    def _match_track_score(self, track: Dict, det: Dict) -> Optional[float]:
+        cx = (det['xmin'] + det['xmax']) / 2
+        cy = (det['ymin'] + det['ymax']) / 2
+        dist = math.hypot(cx - track['centroid'][0], cy - track['centroid'][1])
+        if dist > self.fire_track_match_dist_px:
+            return None
+
+        det_bbox = (det['xmin'], det['ymin'], det['xmax'], det['ymax'])
+        det_area = max((det['xmax'] - det['xmin']) * (det['ymax'] - det['ymin']), 1)
+
+        track_bbox = track.get('bbox')
+        track_area = float(track.get('area', det_area))
+        iou = self._bbox_iou(track_bbox, det_bbox) if track_bbox else 0.0
+
+        min_area = max(min(track_area, det_area), 1.0)
+        max_area = max(track_area, det_area)
+        area_ratio = max_area / min_area
+        if area_ratio > self.fire_track_area_change_max:
+            return None
+
+        if iou < self.fire_track_min_iou and dist > self.fire_track_match_dist_px * 0.5:
+            return None
+
+        dist_score = max(0.0, 1.0 - dist / max(float(self.fire_track_match_dist_px), 1.0))
+        area_score = max(0.0, 1.0 - (area_ratio - 1.0) / max(self.fire_track_area_change_max - 1.0, 1.0))
+        score = 0.50 * dist_score + 0.35 * iou + 0.15 * area_score
+        return score
+
+    def _compute_track_jitter(self, history: List[Tuple[float, float, float]], current_box_diag: float) -> float:
+        if len(history) < 3:
+            return 0.0
+
+        points = np.array([[h[0], h[1]] for h in history], dtype=np.float32)
+        areas = np.array([h[2] for h in history], dtype=np.float32)
+
+        center_steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        center_jitter = float(np.mean(center_steps)) / max(current_box_diag, 1.0)
+        area_jitter = float(np.std(areas) / max(np.mean(areas), 1.0))
+        return center_jitter + area_jitter
+
     def _update_tracker(self, current_detections: List[Dict]) -> List[Dict]:
         """
-        函数级注释：中心点追踪与三级预警判定
-        Level 1 (初级疑似): 刚发现的火焰，黄色框，状态不报警
-        Level 2 (中级异常): 持续2-4帧，橙色框，状态不报警
-        Level 3 (高级确认): 持续5帧以上，红色框，输出 'fire' 类触发主程序报警
+        基于中心点的追踪与三级预警升级。
+        小目标在升到 L3 前需要满足抖动阈值。
         """
         updated_detections = []
         unmatched_tracks = set(self.tracked_targets.keys())
-        
+
         for det in current_detections:
+            det_area = max((det['xmax'] - det['xmin']) * (det['ymax'] - det['ymin']), 1)
+            box_diag = math.hypot(det['xmax'] - det['xmin'], det['ymax'] - det['ymin'])
+            det_bbox = (det['xmin'], det['ymin'], det['xmax'], det['ymax'])
             cx = (det['xmin'] + det['xmax']) / 2
             cy = (det['ymin'] + det['ymax']) / 2
-            
-            # 寻找最近的追踪目标
+
             best_track_id = None
-            min_dist = float('inf')
+            best_score = -1.0
             for tid in list(unmatched_tracks):
                 track = self.tracked_targets[tid]
-                dist = math.hypot(cx - track['centroid'][0], cy - track['centroid'][1])
-                # 距离阈值设定为 80 像素，适应目标移动
-                if dist < 80:
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_track_id = tid
-                        
+                score = self._match_track_score(track, det)
+                if score is None:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_track_id = tid
+
             if best_track_id is not None:
-                # 更新现有追踪
-                self.tracked_targets[best_track_id]['centroid'] = (cx, cy)
-                self.tracked_targets[best_track_id]['frames'] += 1
-                self.tracked_targets[best_track_id]['misses'] = 0
-                frames = self.tracked_targets[best_track_id]['frames']
+                track = self.tracked_targets[best_track_id]
+                track['centroid'] = (cx, cy)
+                track['bbox'] = det_bbox
+                track['area'] = float(det_area)
+                track['frames'] += 1
+                track['misses'] = 0
+                history = track.get('history', [])
+                history.append((cx, cy, float(det_area)))
+                track['history'] = history[-8:]
+                frames = track['frames']
                 unmatched_tracks.remove(best_track_id)
             else:
-                # 创建新追踪
                 best_track_id = self.next_track_id
-                self.tracked_targets[best_track_id] = {'centroid': (cx, cy), 'frames': 1, 'misses': 0}
+                self.tracked_targets[best_track_id] = {
+                    'centroid': (cx, cy),
+                    'bbox': det_bbox,
+                    'area': float(det_area),
+                    'frames': 1,
+                    'misses': 0,
+                    'history': [(cx, cy, float(det_area))],
+                }
                 self.next_track_id += 1
                 frames = 1
-                
-            # 三级预警判定逻辑
+
+            track = self.tracked_targets[best_track_id]
+            jitter = self._compute_track_jitter(track.get('history', []), box_diag)
+            is_small_target = det_area < self.fire_small_area_threshold
+            confirm_frames = self.fire_small_target_confirm_frames if is_small_target else 5
             original_cls = det.get('cls_name', 'fire')
-            
-            if frames >= 5:
-                level = 3  # 高级确认 -> 立即触发警报
-                # 保持原类别 (fire 或 smoke)，以便后续处理
+
+            if frames >= confirm_frames:
+                if is_small_target and jitter < self.fire_small_target_jitter_min:
+                    level = 2
+                    det['cls_name'] = f'suspected_{original_cls}'
+                    det['hold_reason'] = 'low_jitter_small_target'
+                    self.logger.info(
+                        f"小目标抖动不足，维持在 L2: area={det_area}, jitter={jitter:.4f}, threshold={self.fire_small_target_jitter_min:.4f}"
+                    )
+                else:
+                    level = 3
             elif frames >= 2:
-                level = 2  # 中级异常 -> 启动二次验证 (暂不报警)
+                level = 2
                 det['cls_name'] = f'suspected_{original_cls}'
             else:
-                level = 1  # 初级疑似 -> 持续追踪 (暂不报警)
+                level = 1
                 det['cls_name'] = f'suspected_{original_cls}'
-                
+
             det['warning_level'] = level
+            det['track_jitter'] = round(jitter, 4)
+            det['track_frames'] = frames
             updated_detections.append(det)
-            
-        # 清理丢失的追踪目标 (允许丢失3帧)
+
         for tid in list(unmatched_tracks):
             self.tracked_targets[tid]['misses'] += 1
             if self.tracked_targets[tid]['misses'] > 3:
                 del self.tracked_targets[tid]
-                
+
         return updated_detections
+
+    def _get_dynamic_fire_thresholds(self, total_pixels: int) -> Dict[str, Any]:
+        if total_pixels < self.fire_small_area_threshold:
+            return {
+                'scale': 'small',
+                'min_fire_ratio': self.fire_small_target_fire_ratio_min,
+                'min_motion_ratio': self.fire_small_target_motion_min,
+                'min_v_std': self.fire_small_target_vstd_min,
+            }
+        if total_pixels < self.fire_medium_area_threshold:
+            return {
+                'scale': 'medium',
+                'min_fire_ratio': self.fire_medium_target_fire_ratio_min,
+                'min_motion_ratio': self.fire_medium_target_motion_min,
+                'min_v_std': self.fire_medium_target_vstd_min,
+            }
+        return {
+            'scale': 'large',
+            'min_fire_ratio': self.fire_large_target_fire_ratio_min,
+            'min_motion_ratio': self.fire_large_target_motion_min,
+            'min_v_std': self.fire_large_target_vstd_min,
+        }
+
+    def _is_yellow_object_false_alarm(
+        self,
+        roi_raw: np.ndarray,
+        roi_enhanced: np.ndarray,
+        det: Dict,
+        motion_ratio: float,
+    ) -> bool:
+        total_pixels = max(roi_raw.shape[0] * roi_raw.shape[1], 1)
+        hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
+
+        yellow_mask = cv2.inRange(hsv_raw, np.array([15, 80, 80]), np.array([45, 255, 255]))
+        red_mask1 = cv2.inRange(hsv_raw, np.array([0, 70, 70]), np.array([15, 255, 255]))
+        red_mask2 = cv2.inRange(hsv_raw, np.array([165, 70, 70]), np.array([180, 255, 255]))
+        red_mask = cv2.bitwise_or(red_mask1, red_mask2)
+
+        yellow_ratio = cv2.countNonZero(yellow_mask) / total_pixels
+        red_ratio = cv2.countNonZero(red_mask) / total_pixels
+
+        hit_count = 0
+        reasons = []
+
+        if yellow_ratio > 0.35 and red_ratio < 0.12:
+            hit_count += 1
+            reasons.append('yellow-high-red-low')
+
+        s = hsv_raw[:, :, 1]
+        v = hsv_raw[:, :, 2]
+        hue_valid = (s > 60) & (v > 60)
+        if np.count_nonzero(hue_valid) > 20:
+            hue_std = float(np.std(hsv_raw[:, :, 0][hue_valid]))
+        else:
+            hue_std = 180.0
+
+        if yellow_ratio > 0.20 and hue_std < 9.0:
+            hit_count += 1
+            reasons.append('narrow-hue')
+
+        if total_pixels < self.fire_small_area_threshold and motion_ratio < max(self.fire_small_target_motion_min, 0.06):
+            hit_count += 1
+            reasons.append('small-stable')
+
+        kernel = np.ones((3, 3), np.uint8)
+        yellow_clean = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(yellow_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            c = max(contours, key=cv2.contourArea)
+            c_area = cv2.contourArea(c)
+            if c_area > 30:
+                x, y, w, h = cv2.boundingRect(c)
+                rect_area = max(w * h, 1)
+                extent = float(c_area) / rect_area
+                perimeter = max(cv2.arcLength(c, True), 1.0)
+                complexity = (perimeter * perimeter) / (4.0 * np.pi * max(c_area, 1.0))
+                if extent > 0.78 and complexity < 1.45:
+                    hit_count += 1
+                    reasons.append('regular-shape')
+
+        if hit_count >= 2:
+            self.logger.info(
+                f"黄色小物体抑制命中: reasons={','.join(reasons)}, yellow={yellow_ratio:.2f}, red={red_ratio:.2f}, hue_std={hue_std:.2f}, motion={motion_ratio:.3f}, area={total_pixels}"
+            )
+            return True
+
+        return False
 
     def _validate_fire(self, raw_frame: np.ndarray, enhanced_frame: np.ndarray, fg_mask: np.ndarray, det: Dict, skip_motion_check: bool = False) -> bool:
         """
-        函数级注释：多模态特征交叉验证，专治照片误报
-        包括：动态纹理检测、人手肤色过滤、相框直线检测、轮廓复杂度分析
+        火焰多模态校验（含黄色小物体抑制与动态阈值）。
         """
-        xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
+        clipped = self._clip_det_box(det, raw_frame.shape)
+        if clipped is None:
+            return False
+
+        xmin, ymin, xmax, ymax = clipped
         width, height = xmax - xmin, ymax - ymin
         total_pixels = width * height
-        
         if total_pixels < 200:
             return False
-            
+
         roi_raw = raw_frame[ymin:ymax, xmin:xmax]
         roi_enhanced = enhanced_frame[ymin:ymax, xmin:xmax]
-        if roi_raw.size == 0: return False
+        if roi_raw.size == 0 or roi_enhanced.size == 0:
+            return False
 
-        # ==========================================
-        # 1. 动态纹理检测 (运动比例)
-        # ==========================================
-        # 真实火焰会跳跃，照片如果是静止的，前景掩码几乎为0
+        thresholds = self._get_dynamic_fire_thresholds(total_pixels)
+
         roi_fg = fg_mask[ymin:ymax, xmin:xmax]
         motion_ratio = cv2.countNonZero(roi_fg) / total_pixels
 
-        # ==========================================
-        # 2. 人形/手部肤色过滤 (YCrCb)
-        # ==========================================
         ycrcb = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2YCrCb)
-        
-        # 优化肤色检测：结合亮度 (Y) 排除极亮的火焰
-        # Y: 80~200 (排除过暗或过亮，火焰通常 Y > 200)
-        # Cr: 133~173 (红红色度)
-        # Cb: 77~127 (蓝蓝色度)
         skin_low = np.array([80, 135, 85])
         skin_high = np.array([200, 170, 125])
         skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
         skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
-        
-        # 严格限制：如果边界框内大面积是皮肤，且不包含极亮区域，才判定为脸/手
-        # 火焰照片可能也会有部分落在肤色区，所以我们提高阈值到 30% (原 40%)
-        # 这里的 0.30 是经验值，针对低头看手机等场景进行了优化
         if skin_ratio > 0.30:
-            self.logger.info(f"多模态过滤: 真实肤色占比过高 ({skin_ratio:.2f} > 0.30)，判定为人手/人脸")
             return False
-            
-        # 额外的人脸检测器校验 (Haar Cascade)
-        # 如果肤色占比 > 15% 且 检测到人脸特征，直接过滤
+
         if self.face_cascade and skin_ratio > 0.15:
-            # 转换为灰度图检测
             gray_roi_face = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
-            # 适当放大搜索比例，检测正脸
             faces = self.face_cascade.detectMultiScale(gray_roi_face, scaleFactor=1.1, minNeighbors=3, minSize=(20, 20))
             if len(faces) > 0:
-                self.logger.info(f"多模态过滤: Haar级联检测器识别到人脸特征，判定为误报")
                 return False
 
-        # ==========================================
-        # 3. 形状轮廓与手持物过滤 (直线边缘检测)
-        # ==========================================
         gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray_roi, 50, 150)
-        # 寻找直线，手机/照片边缘通常是长直线
-        # [优化] 降低阈值以更容易检测到人工物体边缘（如镜框、反光物边缘）
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=30, minLineLength=min(width, height)*0.3, maxLineGap=10)
-        
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=min(width, height) * 0.3, maxLineGap=10)
         if lines is not None and len(lines) >= 3:
-            self.logger.info(f"多模态过滤: 检测到 {len(lines)} 条明显直线边缘，疑似相框/手机屏幕/人工物体")
             return False
-            
-        # ==========================================
-        # 4. 颜色温度分析 (结合增强图像)
-        # ==========================================
+
         hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
         mask1 = cv2.inRange(hsv, self.fire_color_low1, self.fire_color_high1)
         mask2 = cv2.inRange(hsv, self.fire_color_low2, self.fire_color_high2)
         mask3 = cv2.inRange(hsv, self.fire_color_low3, self.fire_color_high3)
         fire_mask = cv2.bitwise_or(cv2.bitwise_or(mask1, mask2), mask3)
-        
+
         fire_ratio = cv2.countNonZero(fire_mask) / total_pixels
-        if fire_ratio < 0.05:
+        if fire_ratio < thresholds['min_fire_ratio']:
+            self.logger.info(
+                f"火焰过滤: fire_ratio={fire_ratio:.3f} < {thresholds['min_fire_ratio']:.3f}, scale={thresholds['scale']}"
+            )
             return False
 
-        # [新增] 饱和度平均值检查 (过滤水汽反光/指示灯)
-        # 计算原始图像 ROI 的平均饱和度
         hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
-        avg_saturation = np.mean(hsv_raw[:, :, 1])
-        # 真实火焰饱和度通常较高 (>40)，水汽反光或透过白雾的红光饱和度较低
+        avg_saturation = float(np.mean(hsv_raw[:, :, 1]))
         if avg_saturation < 35:
-            self.logger.info(f"多模态过滤: 平均饱和度过低 ({avg_saturation:.1f} < 35)，疑似水汽反光或指示灯")
             return False
 
-        # [新增] 高光反射检测 (Specular Reflection)
-        # 镜面反射通常会导致局部极高亮度（过曝），且纹理细节丢失
+        if self._is_yellow_object_false_alarm(roi_raw, roi_enhanced, det, motion_ratio):
+            return False
+
         v_channel = hsv_raw[:, :, 2]
-        # 统计亮度 > 250 (接近过曝) 的像素占比
         highlight_mask = v_channel > 250
         highlight_ratio = np.count_nonzero(highlight_mask) / total_pixels
-        
         if highlight_ratio > 0.3:
-            self.logger.info(f"多模态过滤: 检测到大面积高光反射 (占比 {highlight_ratio:.2f} > 0.3)，疑似镜面/玻璃反光")
             return False
-            
-        # ==========================================
-        # 5. 轮廓复杂度识别
-        # ==========================================
-        # 真实火焰边缘极其不规则，照片通常是矩形
+
         contours, _ = cv2.findContours(fire_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        complexity = 0
+        complexity = 0.0
+        c_area = 0.0
+        c = None
         if contours:
             c = max(contours, key=cv2.contourArea)
             c_area = cv2.contourArea(c)
             if c_area > 50:
                 perimeter = cv2.arcLength(c, True)
                 complexity = (perimeter ** 2) / (4 * np.pi * c_area)
-                
-        # 完美的圆形复杂度约等于1，正方形约等于1.27
+
         if 0 < complexity < 1.3:
-            self.logger.info(f"多模态过滤: 火焰轮廓过于规则 (复杂度 {complexity:.2f})，疑似人工图像")
             return False
 
-        # [新增] 矩形填充度检查 (Extent) - 过滤方形物体
-        # 人工物体（盒子、手机、纸巾）通常填充度很高(>0.7)，真实火焰通常是不规则的锥形
-        if contours:
+        if c is not None:
             x, y, w, h = cv2.boundingRect(c)
-            # 计算轮廓在自身外接矩形中的占比
             rect_area = w * h
             if rect_area > 0:
                 extent = float(c_area) / rect_area
-                # 只有当置信度不是极高时才应用此规则（防止大火被误杀）
                 if extent > 0.75 and det['conf'] < 0.85:
-                    self.logger.info(f"多模态过滤: 目标形状过于方正 (填充度 {extent:.2f} > 0.75)，疑似人工物体")
                     return False
 
-        # [新增] 亮度均匀度检查 (Intensity Uniformity) - 过滤纯色物体
-        # 真实火焰内部亮度变化剧烈（焰心白->外焰红），标准差大
-        # 纯色物体（如黄色纸巾、墙面）亮度非常均匀，标准差小
-        v_channel = hsv_raw[:, :, 2]
-        v_std = np.std(v_channel)
-        
-        # 阈值设定：一般火焰的 V 通道标准差通常 > 40
-        # 纯色平面物体的标准差通常 < 20
-        if v_std < 25:
-             self.logger.info(f"多模态过滤: 内部亮度过于均匀 (标准差 {v_std:.2f} < 25)，疑似纯色固体表面")
-             return False
+        v_std = float(np.std(v_channel))
+        if v_std < thresholds['min_v_std']:
+            self.logger.info(
+                f"火焰过滤: v_std={v_std:.2f} < {thresholds['min_v_std']:.2f}, scale={thresholds['scale']}"
+            )
+            return False
 
-        # ==========================================
-        # 6. 动静结合终极校验
-        # ==========================================
-        # 如果是极度静止的物体，且形状不够复杂（照片在晃动时有运动，但形状规则）
         if not skip_motion_check:
-            if motion_ratio < 0.05 and complexity < 2.0:
-                 self.logger.info(f"多模态过滤: 静态目标且形状不符合真实火焰 (运动比 {motion_ratio:.2f})")
-                 return False
+            if motion_ratio < thresholds['min_motion_ratio'] and complexity < 2.0:
+                self.logger.info(
+                    f"火焰过滤: motion={motion_ratio:.3f} < {thresholds['min_motion_ratio']:.3f}, complexity={complexity:.2f}"
+                )
+                return False
 
-        self.logger.info(f"火焰验证通过: 复杂度={complexity:.2f}, 运动={motion_ratio:.2f}, 肤色={skin_ratio:.2f}, 饱和度={avg_saturation:.1f}, 亮度方差={v_std:.1f}")
+        det['_box_area'] = total_pixels
+        det['_motion_ratio'] = motion_ratio
+        det['_fire_ratio'] = fire_ratio
+
+        self.logger.info(
+            f"火焰校验通过: scale={thresholds['scale']}, fire_ratio={fire_ratio:.3f}, motion={motion_ratio:.3f}, v_std={v_std:.2f}"
+        )
         return True
 
     def _validate_smoke(self, raw_frame: np.ndarray, det: Dict) -> bool:

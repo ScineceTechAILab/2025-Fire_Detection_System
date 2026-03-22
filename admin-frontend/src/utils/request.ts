@@ -8,22 +8,26 @@ const instance = axios.create({
   withCredentials: true
 })
 
-instance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = localStorage.getItem('auth_token')
-  const csrf = localStorage.getItem('csrf_token')
-  
-  config.headers = config.headers || {}
-  
-  if (token) {
-    ;(config.headers as any)['Authorization'] = `Bearer ${token}`
-  }
-  
-  if (['post', 'put', 'patch', 'delete'].includes((config.method || '').toLowerCase())) {
-    ;(config.headers as any)['X-CSRF-Token'] = csrf || ''
-  }
-  
-  return config
-}, (error) => Promise.reject(error))
+instance.interceptors.request.use(
+  (config: InternalAxiosRequestConfig) => {
+    const token = localStorage.getItem('auth_token')
+    const csrf = localStorage.getItem('csrf_token')
+
+    config.headers = config.headers || {}
+
+    if (token) {
+      ;(config.headers as any).Authorization = `Bearer ${token}`
+    }
+
+    const method = (config.method || '').toLowerCase()
+    if (['post', 'put', 'patch', 'delete'].includes(method)) {
+      ;(config.headers as any)['X-CSRF-Token'] = csrf || ''
+    }
+
+    return config
+  },
+  (error) => Promise.reject(error)
+)
 
 instance.interceptors.response.use(
   (response: AxiosResponse<Response<any>>) => {

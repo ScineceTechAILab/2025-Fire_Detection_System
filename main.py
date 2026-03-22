@@ -83,8 +83,8 @@ class Main:
         alert_interval = self.config_loader.get_config('alert_cooldown_seconds', 360)
         camera_index = self.config_loader.get_config('camera_index', 0)
         rtsp_url = self.config_loader.get_config('rtsp_url')
-        detection_interval = self.config_loader.get_config('detection_interval', 5)
-        consecutive_threshold = self.config_loader.get_config('consecutive_threshold', 12)
+        detection_interval = self.config_loader.get_config('detection_interval', 4)
+        consecutive_threshold = self.config_loader.get_config('consecutive_threshold', 6)
         
         return {
             'alert_interval': alert_interval,
@@ -173,17 +173,26 @@ class Main:
             
             # 每隔 DETECTION_INTERVAL 帧进行一次识别
             if frame_count % config['detection_interval'] == 0:
-                annotated_frame, detections = self.detector.detect_frame(frame, draw=True)
+                try:
+                    annotated_frame, detections = self.detector.detect_frame(frame, draw=True)
+                except Exception as e:
+                    self.logger.exception(f"Detector 单帧检测失败，已跳过当前帧: {e}")
+                    detections = []
+                    annotated_frame = frame.copy()
+                    continue
                 
                 # 检查是否存在 Level 3 (高级确认) 的火灾或烟雾
                 # 在 Detector V2.0 中，warning_level=3 意味着已经通过了多模态验证和连续多帧的追踪
                 is_confirmed_danger = False
+                has_l2_warning = False
                 danger_types = set()
                 
                 for det in detections:
                     if det.get('warning_level', 0) == 3:
                         is_confirmed_danger = True
                         danger_types.add(det.get('cls_name', 'unknown'))
+                    elif det.get('warning_level', 0) == 2:
+                        has_l2_warning = True
                 
                 if is_confirmed_danger:
                     danger_desc = " 和 ".join(danger_types)
@@ -192,6 +201,8 @@ class Main:
                         fire_state_active = True
                         self.logger.warning(f"🚨 Detector已确认高级预警 ({danger_desc})，进入最终报警确认阶段...")
                 else:
+                    if has_l2_warning:
+                        self.logger.info("⚠️ 检测到持续 L2 预警目标，继续观察，不触发正式报警")
                     if consecutive_fire_detections > 0:
                         self.logger.info(f"危险目标消失或降级，报警计数重置 (上次计数: {consecutive_fire_detections})")
                     consecutive_fire_detections = 0

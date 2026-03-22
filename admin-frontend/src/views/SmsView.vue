@@ -1,16 +1,17 @@
 <template>
-  <div class="sms-view">
-    <el-card class="contacts-card">
-      <template #header>
-        <div class="card-header">
-          <span>云短信 - 紧急联系人列表</span>
-          <el-button type="primary" size="small" @click="handleReload">
+  <div class="fd-page">
+    <PageHeader title="短信管理" description="维护短信通知联系人列表，支持新增、编辑、删除与即时刷新。">
+      <template #actions>
+        <ActionBar>
+          <el-button type="primary" @click="handleReload">
             <el-icon><Refresh /></el-icon>
             热加载配置
           </el-button>
-        </div>
+        </ActionBar>
       </template>
-      
+    </PageHeader>
+
+    <DataCard title="短信联系人">
       <ContactList
         :contacts="smsStore.contacts"
         :loading="smsStore.loading"
@@ -19,7 +20,7 @@
         :on-delete="smsStore.deleteContact"
         :on-refresh="smsStore.fetchContacts"
       />
-    </el-card>
+    </DataCard>
   </div>
 </template>
 
@@ -30,6 +31,9 @@ import { Refresh } from '@element-plus/icons-vue'
 import { useSmsStore } from '@/stores/sms'
 import { smsApi } from '@/api/sms'
 import ContactList from '@/components/ContactList.vue'
+import ActionBar from '@/components/layout/ActionBar.vue'
+import DataCard from '@/components/layout/DataCard.vue'
+import PageHeader from '@/components/layout/PageHeader.vue'
 
 const smsStore = useSmsStore()
 
@@ -42,22 +46,8 @@ const handleReload = async () => {
     await smsApi.reloadConfig()
     await smsStore.fetchConfig()
     ElMessage.success('配置热加载成功')
-  } catch (error) {
-    console.error(error)
+  } catch {
+    ElMessage.error('配置热加载失败')
   }
 }
 </script>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-</style>
-
-<style scoped>
-.sms-view {
-  padding: 20px;
-}
-</style>
