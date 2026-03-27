@@ -451,7 +451,7 @@ class Detector:
         areas = np.array([h[2] for h in history], dtype=np.float32)
 
         center_steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
-        center_jitter = float(np.mean(center_steps)) / max(current_box_diag, 1.0)
+        center_jitter = float(np.std(center_steps)) / max(current_box_diag, 1.0)
         area_jitter = float(np.std(areas) / max(np.mean(areas), 1.0))
         return center_jitter + area_jitter
 
@@ -513,12 +513,12 @@ class Detector:
             original_cls = det.get('cls_name', 'fire')
 
             if frames >= confirm_frames:
-                if is_small_target and jitter < self.fire_small_target_jitter_min:
+                if jitter < self.fire_small_target_jitter_min:
                     level = 2
                     det['cls_name'] = f'suspected_{original_cls}'
-                    det['hold_reason'] = 'low_jitter_small_target'
+                    det['hold_reason'] = 'low_jitter'
                     self.logger.info(
-                        f"小目标抖动不足，维持在 L2: area={det_area}, jitter={jitter:.4f}, threshold={self.fire_small_target_jitter_min:.4f}"
+                        f"目标抖动不足，维持在 L2: area={det_area}, jitter={jitter:.4f}, threshold={self.fire_small_target_jitter_min:.4f}"
                     )
                 else:
                     level = 3
@@ -660,8 +660,8 @@ class Detector:
         skin_high = np.array([200, 170, 125])
         skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
         skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
-        if skin_ratio > 0.30:
-            self.logger.info(f"验证3/10失败: 肤色比例过高，skin_ratio={skin_ratio:.3f} > 0.30")
+        if skin_ratio > 0.45:
+            self.logger.info(f"验证3/10失败: 肤色比例过高，skin_ratio={skin_ratio:.3f} > 0.45")
             return False
 
         if self.face_cascade and skin_ratio > 0.15:
@@ -674,15 +674,17 @@ class Detector:
         gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray_roi, 50, 150)
         lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=min(width, height) * 0.3, maxLineGap=10)
-        if lines is not None and len(lines) >= 3:
-            self.logger.info(f"验证5/10失败: 检测到过多直线，lines={len(lines)} >= 3")
+        if lines is not None and len(lines) >= 8:
+            self.logger.info(f"验证5/10失败: 检测到过多直线，lines={len(lines)} >= 8")
             return False
 
         hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
         mask1 = cv2.inRange(hsv, self.fire_color_low1, self.fire_color_high1)
         mask2 = cv2.inRange(hsv, self.fire_color_low2, self.fire_color_high2)
         mask3 = cv2.inRange(hsv, self.fire_color_low3, self.fire_color_high3)
+        white_core_mask = cv2.inRange(hsv, np.array([0, 0, 220]), np.array([180, 60, 255]))
         fire_mask = cv2.bitwise_or(cv2.bitwise_or(mask1, mask2), mask3)
+        fire_mask = cv2.bitwise_or(fire_mask, white_core_mask)
 
         fire_ratio = cv2.countNonZero(fire_mask) / total_pixels
         if fire_ratio < thresholds['min_fire_ratio']:
@@ -692,20 +694,21 @@ class Detector:
             return False
 
         hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
+        v_channel = hsv_raw[:, :, 2]
+        highlight_mask = v_channel > 250
+        highlight_ratio = np.count_nonzero(highlight_mask) / total_pixels
+
         avg_saturation = float(np.mean(hsv_raw[:, :, 1]))
-        if avg_saturation < 35:
-            self.logger.info(f"验证6/10失败: 平均饱和度不足，avg_saturation={avg_saturation:.2f} < 35")
+        if avg_saturation < 35 and highlight_ratio < 0.1:
+            self.logger.info(f"验证6/10失败: 平均饱和度不足，avg_saturation={avg_saturation:.2f} < 35 且 highlight_ratio={highlight_ratio:.3f} < 0.1")
             return False
 
         if self._is_yellow_object_false_alarm(roi_raw, roi_enhanced, det, motion_ratio):
             self.logger.info("验证7/10失败: 黄色小物体抑制命中")
             return False
 
-        v_channel = hsv_raw[:, :, 2]
-        highlight_mask = v_channel > 250
-        highlight_ratio = np.count_nonzero(highlight_mask) / total_pixels
-        if highlight_ratio > 0.3:
-            self.logger.info(f"验证8/10失败: 高亮区域过多，highlight_ratio={highlight_ratio:.3f} > 0.3")
+        if highlight_ratio > 0.75:
+            self.logger.info(f"验证8/10失败: 高亮区域过多，highlight_ratio={highlight_ratio:.3f} > 0.75")
             return False
 
         contours, _ = cv2.findContours(fire_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
