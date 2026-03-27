@@ -368,15 +368,7 @@ class Detector:
                     cls_name_lower = det.get('cls_name', '').lower()
 
                     if cls_name_lower == 'fire':
-                        box_area = max((det['xmax'] - det['xmin']) * (det['ymax'] - det['ymin']), 0)
-                        if box_area < self.min_box_area or box_area > self.max_box_area:
-                            self.logger.info(
-                                f"检测框面积过滤: area={box_area}, range=[{self.min_box_area}, {self.max_box_area}]"
-                            )
-                            if draw:
-                                self._draw_box(annotated, det, level=0)
-                            continue
-
+                        self.logger.info(f"YOLO检测到火灾: conf={det['conf']:.3f}, box=[{det['xmin']},{det['ymin']},{det['xmax']},{det['ymax']}]")
                         is_valid = self._validate_fire(frame, enhanced_frame, fg_mask, det, skip_motion_check=is_static_test)
                         if is_valid:
                             current_fire_candidates.append(det)
@@ -642,17 +634,20 @@ class Detector:
         """
         clipped = self._clip_det_box(det, raw_frame.shape)
         if clipped is None:
+            self.logger.info("验证1/10失败: 检测框裁剪失败")
             return False
 
         xmin, ymin, xmax, ymax = clipped
         width, height = xmax - xmin, ymax - ymin
         total_pixels = width * height
         if total_pixels < 200:
+            self.logger.info(f"验证2/10失败: ROI面积太小，area={total_pixels} < 200")
             return False
 
         roi_raw = raw_frame[ymin:ymax, xmin:xmax]
         roi_enhanced = enhanced_frame[ymin:ymax, xmin:xmax]
         if roi_raw.size == 0 or roi_enhanced.size == 0:
+            self.logger.info("验证2/10失败: ROI为空")
             return False
 
         thresholds = self._get_dynamic_fire_thresholds(total_pixels)
@@ -666,18 +661,21 @@ class Detector:
         skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
         skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
         if skin_ratio > 0.30:
+            self.logger.info(f"验证3/10失败: 肤色比例过高，skin_ratio={skin_ratio:.3f} > 0.30")
             return False
 
         if self.face_cascade and skin_ratio > 0.15:
             gray_roi_face = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray_roi_face, scaleFactor=1.1, minNeighbors=3, minSize=(20, 20))
             if len(faces) > 0:
+                self.logger.info(f"验证4/10失败: 检测到人脸，faces={len(faces)}")
                 return False
 
         gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray_roi, 50, 150)
         lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=min(width, height) * 0.3, maxLineGap=10)
         if lines is not None and len(lines) >= 3:
+            self.logger.info(f"验证5/10失败: 检测到过多直线，lines={len(lines)} >= 3")
             return False
 
         hsv = cv2.cvtColor(roi_enhanced, cv2.COLOR_BGR2HSV)
@@ -689,22 +687,25 @@ class Detector:
         fire_ratio = cv2.countNonZero(fire_mask) / total_pixels
         if fire_ratio < thresholds['min_fire_ratio']:
             self.logger.info(
-                f"火焰过滤: fire_ratio={fire_ratio:.3f} < {thresholds['min_fire_ratio']:.3f}, scale={thresholds['scale']}"
+                f"验证6/10失败: 火焰颜色比例不足，fire_ratio={fire_ratio:.3f} < {thresholds['min_fire_ratio']:.3f}, scale={thresholds['scale']}"
             )
             return False
 
         hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
         avg_saturation = float(np.mean(hsv_raw[:, :, 1]))
         if avg_saturation < 35:
+            self.logger.info(f"验证6/10失败: 平均饱和度不足，avg_saturation={avg_saturation:.2f} < 35")
             return False
 
         if self._is_yellow_object_false_alarm(roi_raw, roi_enhanced, det, motion_ratio):
+            self.logger.info("验证7/10失败: 黄色小物体抑制命中")
             return False
 
         v_channel = hsv_raw[:, :, 2]
         highlight_mask = v_channel > 250
         highlight_ratio = np.count_nonzero(highlight_mask) / total_pixels
         if highlight_ratio > 0.3:
+            self.logger.info(f"验证8/10失败: 高亮区域过多，highlight_ratio={highlight_ratio:.3f} > 0.3")
             return False
 
         contours, _ = cv2.findContours(fire_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -719,6 +720,7 @@ class Detector:
                 complexity = (perimeter ** 2) / (4 * np.pi * c_area)
 
         if 0 < complexity < 1.3:
+            self.logger.info(f"验证8/10失败: 轮廓复杂度不足，complexity={complexity:.2f} < 1.3")
             return False
 
         if c is not None:
@@ -727,19 +729,20 @@ class Detector:
             if rect_area > 0:
                 extent = float(c_area) / rect_area
                 if extent > 0.75 and det['conf'] < 0.85:
+                    self.logger.info(f"验证8/10失败: 形状过于规则，extent={extent:.3f} > 0.75 且 conf={det['conf']:.3f} < 0.85")
                     return False
 
         v_std = float(np.std(v_channel))
         if v_std < thresholds['min_v_std']:
             self.logger.info(
-                f"火焰过滤: v_std={v_std:.2f} < {thresholds['min_v_std']:.2f}, scale={thresholds['scale']}"
+                f"验证9/10失败: 亮度标准差不足，v_std={v_std:.2f} < {thresholds['min_v_std']:.2f}, scale={thresholds['scale']}"
             )
             return False
 
         if not skip_motion_check:
             if motion_ratio < thresholds['min_motion_ratio'] and complexity < 2.0:
                 self.logger.info(
-                    f"火焰过滤: motion={motion_ratio:.3f} < {thresholds['min_motion_ratio']:.3f}, complexity={complexity:.2f}"
+                    f"验证10/10失败: 运动比例不足，motion={motion_ratio:.3f} < {thresholds['min_motion_ratio']:.3f}, complexity={complexity:.2f}"
                 )
                 return False
 
