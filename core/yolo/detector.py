@@ -731,8 +731,8 @@ class Detector:
             rect_area = w * h
             if rect_area > 0:
                 extent = float(c_area) / rect_area
-                if extent > 0.75 and det['conf'] < 0.85:
-                    self.logger.info(f"验证8/10失败: 形状过于规则，extent={extent:.3f} > 0.75 且 conf={det['conf']:.3f} < 0.85")
+                if extent > 0.85 and det['conf'] < 0.80:
+                    self.logger.info(f"验证8/10失败: 形状过于规则，extent={extent:.3f} > 0.85 且 conf={det['conf']:.3f} < 0.80")
                     return False
 
         v_std = float(np.std(v_channel))
