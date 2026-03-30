@@ -165,6 +165,7 @@ class Detector:
             return
         try:
             raw_cfg = {
+                "yolo_confidence": self.config_loader.get_config("yolo_confidence", self.conf),
                 "yolo_iou_threshold": self.config_loader.get_config("yolo_iou_threshold", self.yolo_iou_threshold),
                 "min_box_area": self.config_loader.get_config("min_box_area", self.min_box_area),
                 "max_box_area": self.config_loader.get_config("max_box_area", self.max_box_area),
@@ -186,6 +187,12 @@ class Detector:
         if not force and signature == self._runtime_config_signature:
             return
         self._runtime_config_signature = signature
+
+        # 更新 YOLO 置信度阈值
+        self.conf = self._to_float(
+            raw_cfg.get("yolo_confidence"), self.conf, min_val=0.1, max_val=1.0
+        )
+        self.logger.info(f"YOLO 置信度阈值已更新: {self.conf:.3f}")
 
         self.yolo_iou_threshold = self._to_float(
             raw_cfg.get("yolo_iou_threshold"), self.yolo_iou_threshold, min_val=0.05, max_val=0.95
