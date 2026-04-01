@@ -43,6 +43,7 @@ try:
         nn.ModuleList,
         nn.Upsample,
         nn.MaxPool2d,
+        nn.Identity,
     ])
 except (ImportError, AttributeError):
     pass
