@@ -27,24 +27,6 @@ try:
     from ultralytics.nn.modules.head import Detect
     from ultralytics.nn.modules.block import C2f, Bottleneck, SPPF, DFL
 
-    torch.serialization.add_safe_globals([
-        DetectionModel,
-        Conv,
-        C2f,
-        Bottleneck,
-        SPPF,
-        DFL,
-        Detect,
-        Concat,
-        nn.Sequential,
-        nn.Conv2d,
-        nn.BatchNorm2d,
-        nn.SiLU,
-        nn.ModuleList,
-        nn.Upsample,
-        nn.MaxPool2d,
-        nn.Identity,
-    ])
 except (ImportError, AttributeError):
     pass
 

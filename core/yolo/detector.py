@@ -17,14 +17,14 @@ except ImportError:
 
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
 try:
-    import torch
-
-    _TORCH_AVAILABLE = True
-
     # 关闭 PyTorch 2.6+ 默认开启的 weights_only
     import os
 
     os.environ["TORCH_FORCE_WEIGHTS_ONLY"] = "0"
+    import torch
+
+    _TORCH_AVAILABLE = True
+
     import warnings
 
     warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
