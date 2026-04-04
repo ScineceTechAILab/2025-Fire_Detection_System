@@ -18,14 +18,17 @@ except ImportError:
 # 可选依赖 torch，用于检测 CUDA 可用性与模型迁移
 try:
     import torch
+
     _TORCH_AVAILABLE = True
-    
+
     # 关闭 PyTorch 2.6+ 默认开启的 weights_only
     import os
+
     os.environ["TORCH_FORCE_WEIGHTS_ONLY"] = "0"
     import warnings
+
     warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
-         
+
 except Exception as e:
     _TORCH_AVAILABLE = False
 
@@ -47,21 +50,21 @@ class Detector:
     """
 
     def __init__(
-        self,
-        weights_path: Optional[str] = "weights/best.pt",
-        conf: float = CONFIDENCE_THRESHOLD,
-        device: str = "cpu",
-        classes: Optional[List[int]] = None,
-        imgsz: int = 640,
+            self,
+            weights_path: Optional[str] = "weights/best.pt",
+            conf: float = CONFIDENCE_THRESHOLD,
+            device: str = "cpu",
+            classes: Optional[List[int]] = None,
+            imgsz: int = 640,
     ):
         self.logger = get_logger("Detector")
-        
+
         self.weights_path = weights_path
         self.conf = float(conf) if conf is not None else CONFIDENCE_THRESHOLD
         self.device = device
         self.classes = classes
         self.imgsz = imgsz
-        
+
         # ==========================================
         # 1. 动态背景与光照补偿模块
         # ==========================================
@@ -69,7 +72,7 @@ class Detector:
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         # 用于提取动态纹理，过滤静态照片
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=25, detectShadows=False)
-        
+
         # ==========================================
         # 2. 火焰颜色模型 (HSV) 
         # ==========================================
@@ -79,7 +82,7 @@ class Detector:
         self.fire_color_high2 = np.array([180, 255, 255])
         self.fire_color_low3 = np.array([10, 50, 50])
         self.fire_color_high3 = np.array([40, 255, 255])
-        
+
         # ==========================================
         # 3. 三级预警体系追踪器
         # ==========================================
@@ -104,7 +107,8 @@ class Detector:
             self.face_cascade = None
             self.logger.warning(f"加载人脸检测器失败: {e}")
 
-        self.logger.info(f"初始化高级 Detector V2.0: weights={self.weights_path}, conf={self.conf}, device={self.device}")
+        self.logger.info(
+            f"初始化高级 Detector V2.0: weights={self.weights_path}, conf={self.conf}, device={self.device}")
         self.model = self._load_model()
 
     def _init_runtime_defaults(self):
@@ -148,7 +152,7 @@ class Detector:
         return out
 
     def _to_float(
-        self, value: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None
+            self, value: Any, default: float, min_val: Optional[float] = None, max_val: Optional[float] = None
     ) -> float:
         try:
             out = float(value)
@@ -169,15 +173,23 @@ class Detector:
                 "yolo_iou_threshold": self.config_loader.get_config("yolo_iou_threshold", self.yolo_iou_threshold),
                 "min_box_area": self.config_loader.get_config("min_box_area", self.min_box_area),
                 "max_box_area": self.config_loader.get_config("max_box_area", self.max_box_area),
-                "fire_small_area_threshold": self.config_loader.get_config("fire_small_area_threshold", self.fire_small_area_threshold),
-                "fire_medium_area_threshold": self.config_loader.get_config("fire_medium_area_threshold", self.fire_medium_area_threshold),
-                "fire_small_target_motion_min": self.config_loader.get_config("fire_small_target_motion_min", self.fire_small_target_motion_min),
-                "fire_small_target_fire_ratio_min": self.config_loader.get_config("fire_small_target_fire_ratio_min", self.fire_small_target_fire_ratio_min),
-                "fire_small_target_confirm_frames": self.config_loader.get_config("fire_small_target_confirm_frames", self.fire_small_target_confirm_frames),
-                "fire_small_target_jitter_min": self.config_loader.get_config("fire_small_target_jitter_min", self.fire_small_target_jitter_min),
-                "fire_track_match_dist_px": self.config_loader.get_config("fire_track_match_dist_px", self.fire_track_match_dist_px),
+                "fire_small_area_threshold": self.config_loader.get_config("fire_small_area_threshold",
+                                                                           self.fire_small_area_threshold),
+                "fire_medium_area_threshold": self.config_loader.get_config("fire_medium_area_threshold",
+                                                                            self.fire_medium_area_threshold),
+                "fire_small_target_motion_min": self.config_loader.get_config("fire_small_target_motion_min",
+                                                                              self.fire_small_target_motion_min),
+                "fire_small_target_fire_ratio_min": self.config_loader.get_config("fire_small_target_fire_ratio_min",
+                                                                                  self.fire_small_target_fire_ratio_min),
+                "fire_small_target_confirm_frames": self.config_loader.get_config("fire_small_target_confirm_frames",
+                                                                                  self.fire_small_target_confirm_frames),
+                "fire_small_target_jitter_min": self.config_loader.get_config("fire_small_target_jitter_min",
+                                                                              self.fire_small_target_jitter_min),
+                "fire_track_match_dist_px": self.config_loader.get_config("fire_track_match_dist_px",
+                                                                          self.fire_track_match_dist_px),
                 "fire_track_min_iou": self.config_loader.get_config("fire_track_min_iou", self.fire_track_min_iou),
-                "fire_track_area_change_max": self.config_loader.get_config("fire_track_area_change_max", self.fire_track_area_change_max),
+                "fire_track_area_change_max": self.config_loader.get_config("fire_track_area_change_max",
+                                                                            self.fire_track_area_change_max),
             }
         except Exception as e:
             self.logger.warning(f"读取热配置失败: {e}")
@@ -219,10 +231,12 @@ class Detector:
             raw_cfg.get("fire_small_target_motion_min"), self.fire_small_target_motion_min, min_val=0.0, max_val=1.0
         )
         self.fire_small_target_fire_ratio_min = self._to_float(
-            raw_cfg.get("fire_small_target_fire_ratio_min"), self.fire_small_target_fire_ratio_min, min_val=0.0, max_val=1.0
+            raw_cfg.get("fire_small_target_fire_ratio_min"), self.fire_small_target_fire_ratio_min, min_val=0.0,
+            max_val=1.0
         )
         self.fire_small_target_confirm_frames = self._to_int(
-            raw_cfg.get("fire_small_target_confirm_frames"), self.fire_small_target_confirm_frames, min_val=5, max_val=20
+            raw_cfg.get("fire_small_target_confirm_frames"), self.fire_small_target_confirm_frames, min_val=5,
+            max_val=20
         )
         self.fire_small_target_jitter_min = self._to_float(
             raw_cfg.get("fire_small_target_jitter_min"), self.fire_small_target_jitter_min, min_val=0.0, max_val=0.2
@@ -255,33 +269,33 @@ class Detector:
         if not _TORCH_AVAILABLE:
             self.logger.info("PyTorch 不可用，无法检测 GPU")
             return
-        
+
         torch = __import__("torch")
         self.logger.info("=" * 50)
         self.logger.info("GPU 使用情况验证")
         self.logger.info("=" * 50)
-        
+
         if torch.cuda.is_available():
             self.logger.info(f"✅ CUDA 可用")
             self.logger.info(f"   CUDA 版本: {torch.version.cuda}")
             self.logger.info(f"   GPU 数量: {torch.cuda.device_count()}")
-            
+
             for i in range(torch.cuda.device_count()):
                 device_name = torch.cuda.get_device_name(i)
                 device_prop = torch.cuda.get_device_properties(i)
                 memory_total = device_prop.total_memory / (1024 ** 3)
                 memory_allocated = torch.cuda.memory_allocated(i) / (1024 ** 3)
                 memory_reserved = torch.cuda.memory_reserved(i) / (1024 ** 3)
-                
+
                 self.logger.info(f"   GPU {i}: {device_name}")
                 self.logger.info(f"      总显存: {memory_total:.2f} GB")
                 self.logger.info(f"      已分配: {memory_allocated:.2f} GB")
                 self.logger.info(f"      已预留: {memory_reserved:.2f} GB")
         else:
             self.logger.warning("❌ CUDA 不可用，正在使用 CPU")
-        
+
         self.logger.info("=" * 50)
-    
+
     def _load_model(self) -> YOLO:
         try:
             self._check_gpu_availability()
@@ -296,7 +310,7 @@ class Detector:
                 self.logger.info(f"模型已迁移到设备: {target}")
             except Exception:
                 self.logger.warning(f"将模型迁移到 {target} 失败（可忽略）")
-            
+
             self._check_gpu_availability()
             self.logger.info("YOLO 模型加载成功")
             return model
@@ -316,7 +330,8 @@ class Detector:
             "cls_name": names.get(int(cls), str(int(cls))),
         }
 
-    def detect_frame(self, frame: np.ndarray, draw: bool = True, return_time: bool = False, is_static_test: bool = False) -> Tuple[np.ndarray, List[Dict]]:
+    def detect_frame(self, frame: np.ndarray, draw: bool = True, return_time: bool = False,
+                     is_static_test: bool = False) -> Tuple[np.ndarray, List[Dict]]:
         if frame is None:
             raise ValueError("输入帧为空")
         self._refresh_runtime_config(force=False)
@@ -357,7 +372,8 @@ class Detector:
         if results and len(results) > 0:
             res = results[0]
             try:
-                cls_names = res.names if hasattr(res, "names") and res.names else (self.model.names if hasattr(self.model, "names") else {})
+                cls_names = res.names if hasattr(res, "names") and res.names else (
+                    self.model.names if hasattr(self.model, "names") else {})
             except Exception:
                 cls_names = {}
 
@@ -375,8 +391,10 @@ class Detector:
                     cls_name_lower = det.get('cls_name', '').lower()
 
                     if cls_name_lower == 'fire':
-                        self.logger.info(f"YOLO检测到火灾: conf={det['conf']:.3f}, box=[{det['xmin']},{det['ymin']},{det['xmax']},{det['ymax']}]")
-                        is_valid = self._validate_fire(frame, enhanced_frame, fg_mask, det, skip_motion_check=is_static_test)
+                        self.logger.info(
+                            f"YOLO检测到火灾: conf={det['conf']:.3f}, box=[{det['xmin']},{det['ymin']},{det['xmax']},{det['ymax']}]")
+                        is_valid = self._validate_fire(frame, enhanced_frame, fg_mask, det,
+                                                       skip_motion_check=is_static_test)
                         if is_valid:
                             current_fire_candidates.append(det)
                         else:
@@ -571,11 +589,11 @@ class Detector:
         }
 
     def _is_yellow_object_false_alarm(
-        self,
-        roi_raw: np.ndarray,
-        roi_enhanced: np.ndarray,
-        det: Dict,
-        motion_ratio: float,
+            self,
+            roi_raw: np.ndarray,
+            roi_enhanced: np.ndarray,
+            det: Dict,
+            motion_ratio: float,
     ) -> bool:
         total_pixels = max(roi_raw.shape[0] * roi_raw.shape[1], 1)
         hsv_raw = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
@@ -607,7 +625,8 @@ class Detector:
             hit_count += 1
             reasons.append('narrow-hue')
 
-        if total_pixels < self.fire_small_area_threshold and motion_ratio < max(self.fire_small_target_motion_min, 0.06):
+        if total_pixels < self.fire_small_area_threshold and motion_ratio < max(self.fire_small_target_motion_min,
+                                                                                0.06):
             hit_count += 1
             reasons.append('small-stable')
 
@@ -635,7 +654,8 @@ class Detector:
 
         return False
 
-    def _validate_fire(self, raw_frame: np.ndarray, enhanced_frame: np.ndarray, fg_mask: np.ndarray, det: Dict, skip_motion_check: bool = False) -> bool:
+    def _validate_fire(self, raw_frame: np.ndarray, enhanced_frame: np.ndarray, fg_mask: np.ndarray, det: Dict,
+                       skip_motion_check: bool = False) -> bool:
         """
         火焰多模态校验（含黄色小物体抑制与动态阈值）。
         """
@@ -663,24 +683,45 @@ class Detector:
         motion_ratio = cv2.countNonZero(roi_fg) / total_pixels
 
         ycrcb = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2YCrCb)
-        skin_low = np.array([80, 135, 85])
-        skin_high = np.array([200, 170, 125])
+        skin_low = np.array([70, 130, 80])
+        skin_high = np.array([210, 180, 135])
         skin_mask = cv2.inRange(ycrcb, skin_low, skin_high)
         skin_ratio = cv2.countNonZero(skin_mask) / total_pixels
-        if skin_ratio > 0.45:
-            self.logger.info(f"验证3/10失败: 肤色比例过高，skin_ratio={skin_ratio:.3f} > 0.45")
+
+        # 计算检测框宽高比（人脸通常是接近方形的）
+        box_ratio = width / max(height, 1)
+        is_face_like_ratio = 0.7 <= box_ratio <= 1.3
+
+        # 肤色检测阈值优化：降低到0.25，或者比例符合人脸且肤色>0.15
+        if skin_ratio > 0.25 or (is_face_like_ratio and skin_ratio > 0.15):
+            self.logger.info(f"验证3/10失败: 肤色比例过高，skin_ratio={skin_ratio:.3f}, ratio={box_ratio:.2f}")
             return False
 
-        if self.face_cascade and skin_ratio > 0.15:
-            gray_roi_face = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
-            faces = self.face_cascade.detectMultiScale(gray_roi_face, scaleFactor=1.1, minNeighbors=3, minSize=(20, 20))
+        # 提前创建灰度图，供后续所有检测使用
+        gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
+
+        # 人脸检测触发阈值降低，同时增加人脸比例条件
+        if self.face_cascade and (skin_ratio > 0.08 or is_face_like_ratio):
+            # 优化Haar参数：更精细检测，更小的minSize
+            min_face_size = max(20, min(width, height) // 3)
+            faces = self.face_cascade.detectMultiScale(
+                gray_roi,
+                scaleFactor=1.05,
+                minNeighbors=2,
+                minSize=(min_face_size, min_face_size)
+            )
             if len(faces) > 0:
-                self.logger.info(f"验证4/10失败: 检测到人脸，faces={len(faces)}")
+                self.logger.info(f"验证4/10失败: 检测到人脸，faces={len(faces)}, skin_ratio={skin_ratio:.3f}")
                 return False
 
-        gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
+        # 额外的椭圆形状检测（人脸更接近椭圆）
+        if is_face_like_ratio and skin_ratio > 0.05:
+            if self._check_face_shape(gray_roi, width, height):
+                self.logger.info(f"验证4/10失败: 检测到人脸形状特征，ratio={box_ratio:.2f}")
+                return False
         edges = cv2.Canny(gray_roi, 50, 150)
-        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=min(width, height) * 0.3, maxLineGap=10)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=30, minLineLength=min(width, height) * 0.3,
+                                maxLineGap=10)
         if lines is not None and len(lines) >= 8:
             self.logger.info(f"验证5/10失败: 检测到过多直线，lines={len(lines)} >= 8")
             return False
@@ -707,7 +748,8 @@ class Detector:
 
         avg_saturation = float(np.mean(hsv_raw[:, :, 1]))
         if avg_saturation < 35 and highlight_ratio < 0.1:
-            self.logger.info(f"验证6/10失败: 平均饱和度不足，avg_saturation={avg_saturation:.2f} < 35 且 highlight_ratio={highlight_ratio:.3f} < 0.1")
+            self.logger.info(
+                f"验证6/10失败: 平均饱和度不足，avg_saturation={avg_saturation:.2f} < 35 且 highlight_ratio={highlight_ratio:.3f} < 0.1")
             return False
 
         if self._is_yellow_object_false_alarm(roi_raw, roi_enhanced, det, motion_ratio):
@@ -739,7 +781,8 @@ class Detector:
             if rect_area > 0:
                 extent = float(c_area) / rect_area
                 if extent > 0.85 and det['conf'] < 0.80:
-                    self.logger.info(f"验证8/10失败: 形状过于规则，extent={extent:.3f} > 0.85 且 conf={det['conf']:.3f} < 0.80")
+                    self.logger.info(
+                        f"验证8/10失败: 形状过于规则，extent={extent:.3f} > 0.85 且 conf={det['conf']:.3f} < 0.80")
                     return False
 
         v_std = float(np.std(v_channel))
@@ -760,10 +803,54 @@ class Detector:
         det['_motion_ratio'] = motion_ratio
         det['_fire_ratio'] = fire_ratio
 
+        # 火焰颜色与肤色重叠检查：如果同时有较高的火焰比例和肤色比例，增加验证标准
+        if fire_ratio > 0.5 and skin_ratio > 0.08:
+            self.logger.info(
+                f"验证额外检查失败: 同时检测到高火焰比例和肤色，fire_ratio={fire_ratio:.3f}, skin_ratio={skin_ratio:.3f}"
+            )
+            return False
+
         self.logger.info(
             f"火焰校验通过: scale={thresholds['scale']}, fire_ratio={fire_ratio:.3f}, motion={motion_ratio:.3f}, v_std={v_std:.2f}"
         )
         return True
+
+    def _check_face_shape(self, gray_roi: np.ndarray, width: int, height: int) -> bool:
+        """
+        检查是否符合人脸形状特征（椭圆度、轮廓特征）
+        """
+        try:
+            # 二值化
+            _, binary = cv2.threshold(gray_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # 轮廓检测
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if len(contours) == 0:
+                return False
+
+            max_contour = max(contours, key=cv2.contourArea)
+            contour_area = cv2.contourArea(max_contour)
+            if contour_area < 50:
+                return False
+
+            # 计算轮廓的椭圆拟合
+            if len(max_contour) >= 5:
+                ellipse = cv2.fitEllipse(max_contour)
+                (_, (MA, ma), _) = ellipse
+                # 椭圆的长短轴比例（人脸通常接近圆形）
+                aspect_ratio = min(MA, ma) / max(MA, ma)
+
+                # 面积比率：轮廓面积/椭圆面积
+                ellipse_area = np.pi * (MA / 2) * (ma / 2)
+                area_ratio = contour_area / max(ellipse_area, 1)
+
+                # 判断是否符合人脸形状
+                is_face_shape = aspect_ratio > 0.75 and area_ratio > 0.65
+                return is_face_shape
+        except Exception as e:
+            self.logger.debug(f"椭圆形状检测失败: {e}")
+
+        return False
 
     def _validate_smoke(self, raw_frame: np.ndarray, det: Dict) -> bool:
         """
@@ -774,28 +861,28 @@ class Detector:
         xmin, ymin, xmax, ymax = det['xmin'], det['ymin'], det['xmax'], det['ymax']
         width, height = xmax - xmin, ymax - ymin
         conf = det['conf']
-        
+
         # 面积太小很难判断，直接放行或者过滤视需求而定，这里设定最小面积
         if width * height < 400:
             return False
-            
+
         roi_raw = raw_frame[ymin:ymax, xmin:xmax]
         if roi_raw.size == 0: return False
-        
+
         # ==========================================
         # 1. 亮度与饱和度分析 (HSV)
         # ==========================================
         hsv = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2HSV)
         s_channel = hsv[:, :, 1]
         v_channel = hsv[:, :, 2]
-        
+
         avg_s = np.mean(s_channel)
         avg_v = np.mean(v_channel)
-        
+
         # [调整] 加湿器水汽通常非常白（亮度极高，饱和度接近0）
         # 之前的阈值 (V>210, S<20) 可能太严格，导致稍暗的水汽漏过
         # 现在的策略：如果是低置信度 (<0.75) 的检测，应用更严格的 HSV 过滤
-        
+
         if conf < 0.75:
             # 低置信度：只要比较白 (V>160) 且饱和度低 (S<30)，就认为是水汽
             v_thresh = 160
@@ -804,11 +891,12 @@ class Detector:
             # 高置信度：要求非常白才过滤
             v_thresh = 200
             s_thresh = 20
-            
+
         if avg_v > v_thresh and avg_s < s_thresh:
-            self.logger.info(f"烟雾验证失败：疑似水汽/反光 (Conf={conf:.2f}, V={avg_v:.1f}>{v_thresh}, S={avg_s:.1f}<{s_thresh})")
+            self.logger.info(
+                f"烟雾验证失败：疑似水汽/反光 (Conf={conf:.2f}, V={avg_v:.1f}>{v_thresh}, S={avg_s:.1f}<{s_thresh})")
             return False
-            
+
         # ==========================================
         # 2. 纹理高频细节分析 (Laplacian 边缘检测方差)
         # ==========================================
@@ -816,14 +904,14 @@ class Detector:
         gray_roi = cv2.cvtColor(roi_raw, cv2.COLOR_BGR2GRAY)
         laplacian = cv2.Laplacian(gray_roi, cv2.CV_64F)
         variance = laplacian.var()
-        
+
         # [调整] 根据置信度调整方差阈值
         var_thresh = 40 if conf < 0.75 else 25
-        
+
         if variance < var_thresh:
             self.logger.info(f"烟雾验证失败：纹理太平滑 (方差 {variance:.1f} < {var_thresh})，疑似水汽")
             return False
-            
+
         self.logger.info(f"烟雾验证通过: Conf={conf:.2f}, V={avg_v:.1f}, S={avg_s:.1f}, Var={variance:.1f}")
         return True
 
@@ -832,21 +920,21 @@ class Detector:
         函数级注释：分级绘制检测框
         """
         if level == 3:
-            color = (0, 0, 255) # 红色: 高级确认 (真实报警)
+            color = (0, 0, 255)  # 红色: 高级确认 (真实报警)
             status = " [L3: Confirmed]"
         elif level == 2:
-            color = (0, 165, 255) # 橙色: 中级异常
+            color = (0, 165, 255)  # 橙色: 中级异常
             status = " [L2: Validating]"
         elif level == 1:
-            color = (0, 255, 255) # 黄色: 初级疑似
+            color = (0, 255, 255)  # 黄色: 初级疑似
             status = " [L1: Suspected]"
         elif level == 0:
-            color = (128, 128, 128) # 灰色: 被规则过滤
+            color = (128, 128, 128)  # 灰色: 被规则过滤
             status = " [Filtered]"
         else:
-            color = (255, 0, 0) # 蓝色: 其他类别
+            color = (255, 0, 0)  # 蓝色: 其他类别
             status = ""
-            
+
         cv2.rectangle(img, (det["xmin"], det["ymin"]), (det["xmax"], det["ymax"]), color, 2)
         label = f'{det["cls_name"]} {det["conf"]:.2f}{status}'
         (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
