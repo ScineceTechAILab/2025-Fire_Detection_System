@@ -5,7 +5,6 @@
 /admin-frontend/node_modules/
 /admin-backend/.env
 /admin-frontend/.env
-/docs/
 /admin-backend/config/
 /dataset/
 /scripts/
