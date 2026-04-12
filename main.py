@@ -18,6 +18,8 @@ setup_logging(log_dir=log_dir, log_level=logging.INFO, retention_days=7)
 from core.communication.communication import Communication
 from core.communication.config_hot_loader import get_config_hot_loader
 from core.yolo.detector import Detector
+from core.yolo.Onvif_to_RTSP import analysis_rtsp
+
 
 try:
     import torch
@@ -65,16 +67,28 @@ class Main:
         """
         alert_interval = self.config_loader.get_config('alert_cooldown_seconds', 360)
         camera_index = self.config_loader.get_config('camera_index', 0)
-        rtsp_url = self.config_loader.get_config('rtsp_url')
         detection_interval = self.config_loader.get_config('detection_interval', 4)
         consecutive_threshold = self.config_loader.get_config('consecutive_threshold', 6)
+        #rtsp摄像头参数
+        rtsp_url = self.config_loader.get_config('rtsp_url')
+        #onvif协议摄像头参数
+        onvif_use= self.config_loader.get_config('onvif_use', False)
+        onvif_ip = self.config_loader.get_config('onvif_ip')
+        onvif_port = self.config_loader.get_config('onvif_port')
+        onvif_username = self.config_loader.get_config('onvif_username')
+        onvif_password = self.config_loader.get_config('onvif_password')
         
         return {
             'alert_interval': alert_interval,
             'camera_index': camera_index,
             'rtsp_url': rtsp_url,
             'detection_interval': detection_interval,
-            'consecutive_threshold': consecutive_threshold
+            'consecutive_threshold': consecutive_threshold,
+            'onvif_use': onvif_use,
+            'onvif_ip': onvif_ip,
+            'onvif_port': onvif_port,
+            'onvif_username': onvif_username,
+            'onvif_password': onvif_password
         }
     
     def _is_local_mode(self) -> bool:
@@ -88,7 +102,38 @@ class Main:
             return False
         # 否则默认本地模式
         return True
-    
+
+    def _resolve_video_source(self, config):
+        """
+        函数级注释：判断视频画面来源
+        优先级：
+        1) 显式配置的 RTSP URL
+        2) ONVIF 协议动态获取 RTSP URL
+        3) 本地摄像头索引
+        """
+        # 1) 优先使用显式 RTSP
+        if config.get('rtsp_url'):
+            self.logger.info("使用配置的 RTSP 视频源")
+            return config['rtsp_url']
+
+        # 2) 其次使用 ONVIF 动态获取 RTSP
+        if config.get('onvif_use'):
+            try:
+                rtsp_url = analysis_rtsp(
+                    ip=config.get('onvif_ip'),
+                    port=int(config.get('onvif_port') or 80),
+                    username=config.get('onvif_username'),
+                    password=config.get('onvif_password'),
+                )
+                self.logger.info("使用 ONVIF 获取到的 RTSP 视频源")
+                return rtsp_url
+            except Exception as e:
+                self.logger.exception(f"ONVIF 获取 RTSP 失败，回退本地摄像头: {e}")
+
+        # 3) 最后回退本地摄像头
+        self.logger.info("使用本地摄像头 camera_index")
+        return config['camera_index']
+
     def run_detection_loop(self):
         """
         函数级注释：主检测循环
@@ -96,16 +141,9 @@ class Main:
         """
         config = self._get_config()
         is_local = self._is_local_mode()
-        
-        if is_local:
-            # 本地模式：强制使用本地摄像头
-            source = config['camera_index']
-            self.logger.info("本地模式：使用本地摄像头")
-        else:
-            # 服务器模式：使用 RTSP 流（如果配置），否则使用本地摄像头
-            source = config['rtsp_url'] if config['rtsp_url'] else config['camera_index']
-            self.logger.info("服务器模式：使用视频源")
-        
+        #获取视频源
+        source = self._resolve_video_source(config)
+
         cap = cv2.VideoCapture(source)
         
         # RTSP 流优化参数
