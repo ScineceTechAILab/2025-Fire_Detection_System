@@ -6,7 +6,21 @@ from onvif import ONVIFCamera
 
 def analysis_rtsp(ip, port, username, password):
     # 寻找 Python 环境里 python-onvif-zeep 库自带的说明书文件（WSDL 文件）
-    wsdl_dir = os.path.join(os.path.dirname(onvif.__file__), "wsdl")
+    possible_wsdl_dirs = [
+        os.path.join(os.path.dirname(onvif.__file__), "wsdl"),
+        "/usr/local/lib/python3.10/site-packages/wsdl",
+        "/app/wsdl"
+    ]
+
+    wsdl_dir = None
+    for d in possible_wsdl_dirs:
+        if os.path.exists(os.path.join(d, "devicemgmt.wsdl")):
+            wsdl_dir = d
+            break
+
+    if not wsdl_dir:
+        # 如果实在找不到，报错信息会告诉你搜过哪里
+        raise RuntimeError(f"未找到 WSDL 文件: {possible_wsdl_dirs}")
     # 初始化摄像头对象
     cam = ONVIFCamera(ip, port, username, password, wsdl_dir)
     # 创建一个媒体服务实例
