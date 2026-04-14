@@ -1,11 +1,12 @@
 import sys
 import os
+import onvif
 from onvif import ONVIFCamera
 
 
 def analysis_rtsp(ip, port, username, password):
     # 寻找 Python 环境里 python-onvif-zeep 库自带的说明书文件（WSDL 文件）
-    wsdl_dir = os.path.join(sys.prefix, "Lib", "site-packages", "wsdl")
+    wsdl_dir = os.path.join(os.path.dirname(onvif.__file__), "wsdl")
     # 初始化摄像头对象
     cam = ONVIFCamera(ip, port, username, password, wsdl_dir)
     # 创建一个媒体服务实例
